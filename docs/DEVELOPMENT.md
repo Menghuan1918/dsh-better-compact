@@ -13,9 +13,10 @@ commits, docs, or the npm package.
   verification promise.
 - Node.js `^22.19.0 || >=24.0.0`.
 - Pure ESM, no build step, no generated assets.
-- The desktop/Web GUI acceptance of the visual settings page belongs to S3 and
-  was **not** performed here. The S2 browser module is a minimal, read-only
-  config-slot entry.
+- The visual settings page is implemented as the zero-build browser half and
+  covered by `react-test-renderer` component tests with a fake Host form. A
+  visual/keyboard acceptance pass in the current GUI was **not** performed here;
+  that belongs to S4.
 
 ## Repository layout
 
@@ -34,7 +35,8 @@ commits, docs, or the npm package.
 | [src/live.js](../src/live.js) | Process-local "summary in flight", classified-failure, and handoff-continuation outcome observations for inspect only; no durable claim. |
 | [src/identity.js](../src/identity.js) | Unwraps cordis service proxies (`symbols.original`) so preset-owned engines can be compared and recognized. |
 | [src/inspect.js](../src/inspect.js) | Live/cold session inspection, budget/preview construction, `lastCompaction` projection, inspect error taxonomy. |
-| [src/client.js](../src/client.js) | Zero-build browser closure; registers the stable row-config keys. |
+| [src/models.js](../src/models.js) | Read-only projection of the host's allowed summary-model candidates and their advertised efforts. |
+| [src/client.js](../src/client.js) | Zero-build visual settings page: three strategy diagrams, model/effort, budget/retention, cache, advanced options, native status, session picker, Host-form save. Registers the stable row-config keys. |
 | [scripts/runtime-smoke.mjs](../scripts/runtime-smoke.mjs) | Four-boot real-profile smoke with a temp DSH home and scripted adapter. |
 | [tests/](../tests) | `node:test` unit/component tests; no browser build. |
 | [third-party/](../third-party) | MIT notice/license for adapted DSH material. |
@@ -123,6 +125,16 @@ installed build:
    the exact same Markdown body. That makes file deletion harmless for replay and
    avoids a sidecar index. Continuation is triggered by the live manual call,
    never by observing an event, so replay cannot reschedule it.
+13. **The visual page reads over GET and writes only through the Host form.**
+    `/better-compact/api/models` is a metadata projection of the optional host
+    `subagentModelSelection` service plus `llm.resolveModelInfo` efforts; it is
+    not a second model catalog, performs no provider/CLI I/O, and returns
+    `{enabled:false,routes:[]}` when the service is absent. The page's only
+    write path is `form.mutate(ops, expectedRevision)`; revision conflicts are
+    surfaced explicitly and transport failures keep the draft. Session selection
+    comes from the client `sessions` list store, so the row page never invents a
+    session id. Strategy SVGs are schematics; token/budget/status numbers come
+    only from inspect and unknown values stay unknown.
 
 ## Test coverage
 
@@ -158,9 +170,19 @@ installed build:
 - `fence.test.mjs` — 401/403 ordering, missing-fence 503, registration waiting
   for both webServer and connection, 400/405, documented response shape and
   no-store.
-- `client.test.mjs` — module identity, alias keys, slot registration/release,
-  summary/page copy, no editing controls, native-mode "not applicable"
-  effort/cache display.
+- `models.test.mjs` — absent/allowed/malformed catalogs, per-route capability
+  failure, fence ordering before model work, GET-only 405, no-store JSON, and
+  both routes being registered only with webserver+fence.
+- `client.test.mjs` — module identity, alias keys, slot registration, summary
+  copy, section order, three distinct diagrams, radiogroup/keyboard/disabled
+  semantics, pending active-mode flags, native "not applicable" controls,
+  model/effort incompatibility and pair clearing, unknown capability,
+  retention switching, save ops/revision, success/reload copy, conflict,
+  refused/transport errors, unknown vs measured budget, framing labels, reason
+  classification, completed/cache-unknown/persistence-error statuses, handoff
+  continuation, deduped diagnostics, foreign-engine suppression, session
+  selection/stale abort/empty state, inspect failure still editable, host theme
+  tokens/reduced motion/labelled controls, and no client-side token counting.
 - `package.test.mjs` — npm contract, file whitelist, patch structure, verbatim
   standard-preset copy (when `DSH_PACKAGE_ROOT` is set), release workflow, and
   tracked-file hygiene.
@@ -192,8 +214,10 @@ What it does:
    `'session-title'`.
 4. Boot 1 — goal mode, auto on:
    auto pressure compaction and native event sequence; authenticated inspect
-   over HTTP (401 unauthenticated, 400/404/405/no-store); preview range equals
-   the actual native `shadowedRange`; read-only checks; goal state in the
+   over HTTP (401 unauthenticated, 400/404/405/no-store); the models route over
+   the same fence with the real allowed-model catalog and advertised efforts
+   (401 unauthenticated, 405 write verb, no-store); preview range equals the
+   actual native `shadowedRange`; read-only checks; goal state in the
    instruction; failure keeps the durable surface and turn; recovery; manual
    failure mapping; manual no-op; settings save → `requiresReload` → active
    snapshot unchanged.
@@ -226,10 +250,25 @@ touches the user's real profile or the running GUI.
 
 ## Debugging notes
 
-- Until S3 ships, there is no in-app editor. The Plugins row page is read-only;
+- The Plugins row page is the visual editor. It saves through the Host
+  configForms revision/CAS path and shows "saved — reload profile"; restart the
+  DSH process to apply. If the page itself is unavailable or you prefer files,
   edit the `dsh-better-compact` row in the profile's `cordis.patch.yml` and
-  restart the profile. The settings service still owns revision/CAS when an
-  editor arrives.
+  restart the profile.
+- If the visual page says model capability is unknown, the host has no
+  `subagentModelSelection` service or the adapter has no reasoning metadata.
+  Free-text provider/model/effort still works; the models route intentionally
+  does not probe providers or CLI catalogs.
+- The session picker auto-selects the first client session and can switch to
+  plugin state only. It only calls the GET inspect route; a page refresh or a
+  picker change never triggers compaction, an LLM call, a CLI call, or a file
+  write.
+- A revision conflict in the page means the Host configuration changed while
+  the draft was open; use "Reload host values" and re-apply. A transport error
+  keeps the draft and is not a successful save.
+- Native mode disables the enhanced effort/cache controls while keeping their
+  saved values; switching back to goal/handoff re-enables them. Do not expect
+  the native summarizer to apply those values.
 - `ctx.compaction` must be a `BetterCompactEngine`. If it is absent, the bundle
   row was not selected or the row failed to load; read the Loader diagnostic.
 - If Web sessions do not use the plugin, check the selected preset. Shipped
@@ -266,9 +305,9 @@ touches the user's real profile or the running GUI.
 - Do not add mutating verbs to inspect; settings writes go through the host
   `settings`/configForms pipeline only.
 
-## Inspect contract notes for S3
+## Inspect and models contract notes for the visual settings page
 
-The read-only payload is the shared contract S3 renders; treat these as stable:
+The read-only payload is the shared contract the visual settings page renders; treat these as stable:
 
 - Keys: `activeConfig`, `requiresReload`, `sessionId`, `engine`, `diagnostics`,
   `budget`, `preview`, `lastCompaction`, `handoffContinuation`.
@@ -286,7 +325,16 @@ The read-only payload is the shared contract S3 renders; treat these as stable:
 - `afterUpperBoundTokens` includes the summary output budget and
   `NATIVE_CHECKPOINT_FRAMING_TOKENS`; keep calling it an upper-bound estimate.
 - Saving still goes through `ctx.settings`/configForms revision CAS; this API is
-  GET-only and must not gain a write verb for S3 convenience.
+  GET-only and must not gain a write verb for UI convenience.
+- `GET /better-compact/api/models` shares the same fence and is also GET-only.
+  It returns `{enabled, routes:[{provider,model,efforts,defaultEffort}]}` from
+  the optional `subagentModelSelection.current().allowedModels` catalog enriched
+  with `llm.resolveModelInfo` reasoning efforts; absent service/catalog is
+  `{enabled:false,routes:[]}`. The list is candidate metadata — the page keeps a
+  saved route outside it visible and marked rather than deleting it.
+- The client uses the client `sessions` service list store (`ids`/`byId`) to
+  pick one session for `?sessionId=`, aborts stale requests, and keeps the form
+  editable when inspect fails. It never invents a session id.
 
 ## Updating the DSH baseline
 
@@ -310,5 +358,6 @@ The read-only payload is the shared contract S3 renders; treat these as stable:
 - Real provider cache-read/write hits and cost effects.
 - Reasoning-effort quality (capability validation is tested; model behavior is
   not).
-- The S3 visual settings page and any screenshot/keyboard acceptance.
+- A current-GUI visual/keyboard acceptance pass of the visual settings page
+  (component tests only here; the running-GUI check belongs to S4).
 - Apollo combination/loading matrix and migration (S4).

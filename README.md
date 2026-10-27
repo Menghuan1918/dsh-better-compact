@@ -2,8 +2,9 @@
 
 Independent DSH compaction plugin. It keeps the native checkpoint transaction and
 adds two continuation-oriented summarization modes: **goal** (default) and
-**file handoff**, plus a read-only inspect API for the future visual settings
-page. It does not need Apollo, a second history database, or a custom write API.
+**file handoff**, plus an embedded visual settings page and a read-only
+inspect/models API. It does not need Apollo, a second history database, or a
+custom write API.
 
 - Package: `dsh-better-compact` `0.1.0`
 - License: GPL-3.0-or-later (adapted DSH material remains MIT; see
@@ -48,11 +49,18 @@ After installing or changing a load-time setting, **restart the DSH profile**
 (restart the DSH process). Refreshing the Web page only reloads the UI; it does
 not replace a running engine. See [apply-on-reload](#apply-on-reload).
 
-### Configuring before S3 ships an editor
+### Configuring in the Web UI
 
-This S2 build has no in-app editor by design; the Plugins page entry is a
-read-only summary. Configure the row in the profile's `cordis.patch.yml` (the
-same file the Host settings service writes) and restart the profile:
+In the Web Plugins page, open the `dsh-better-compact` row. Its page is the
+visual settings editor described in [Visual settings page](#visual-settings-page):
+three strategy cards, summary model/effort, the budget and retention
+visualization, cache priority, collapsible advanced options, and the recent
+native compaction status. It is embedded in the Host's existing config slot and
+saves through the Host configForms revision/CAS path.
+
+The same values can still be edited manually in the profile's
+`cordis.patch.yml` (the same file the Host settings service writes); restart
+the profile after either kind of change:
 
 ```yaml
 - id: dsh-better-compact
@@ -66,9 +74,8 @@ same file the Host settings service writes) and restart the profile:
 ```
 
 `retainTokens` replaces `retainRatio` (never set both). Omitted fields take the
-documented defaults. The future S3 page will use the same schema and the
-Host configForms revision/CAS path; nothing in this backend needs to change for
-it.
+documented defaults and the page shows those effective values rather than
+hard-coded sketch numbers.
 
 ### Web: select the `better-compact` preset
 
@@ -110,6 +117,116 @@ standalone and Apollo assemblies share one implementation:
 Do not install both bundle sources merely to enable compaction; only one explicit
 entry is recommended.
 
+## Visual settings page
+
+The browser half is a zero-build React closure loaded by the Host module loader
+(`id: dsh-better-compact`, only `require('react')`). It registers one component
+under the canonical row key and both Apollo aliases, so standalone and Apollo
+assemblies share the same page and the same Host form. The page never imports
+Apollo, never adds a chart/build dependency, and only performs read-only GETs to
+`/better-compact/api/inspect` and `/better-compact/api/models`.
+
+### Layout and modes
+
+The order is overview first, advanced collapsed: three mode cards, summary
+model/effort, context budget and retention, cache priority, advanced settings,
+then recent native compaction status. Each card has its own inline SVG strategy
+diagram, not a shared picture or an icon:
+
+| Card | What the diagram shows |
+| --- | --- |
+| DSH native | Earlier history → native summary; recent verbatim stays retained; result is the native checkpoint. |
+| Goal-enhanced (default) | Earlier history **plus** the external authoritative goal/todo → goal/constraints/progress/next summary; recent verbatim retained; goal stays read-only. |
+| File handoff | Conversation/state → this attempt's temporary handoff file → native events store the same body → same-session continuation; recent verbatim retained. |
+
+The cards are one `role="radiogroup"`; each card is a `role="radio"` with
+`aria-checked`, mouse and keyboard selection (Arrow keys, Home/End, Space/Enter),
+focus-visible styling, and a disabled state. Selection is not conveyed by color
+alone: the selected card also shows a "✓ Selected" tag and a filled radio dot.
+The section is labelled "strategy schematic, not a live token flow or cache hit
+rate". If the selected/saved mode differs from the active engine snapshot, the
+card and the active-config banner say a profile reload is required.
+
+### Session selection and read-only status
+
+The row page has no session prop, so the page uses the client `sessions` service
+snapshot (`ids`/`byId`) to offer a picker. It auto-selects the first available
+session, can switch back to **Plugin state only (no session)**, and never invents
+a session id. The selected id becomes `?sessionId=` on the inspect GET; changing
+the selection aborts the stale request. The page renders the native
+`lastCompaction` projection (trigger, status, duration, before/after tokens,
+mode, real cache usage, error), `handoffContinuation` (scheduled/skipped plus
+blockers and "waiting for the user"), and deduplicated `diagnostics`. It also
+names the serving engine: for a foreign-preset session it says a different
+compaction engine runs and does not draw a fake budget/preview, while still
+showing that session's real compaction record. Unknown values stay unknown; only
+provider-reported cache usage is shown, never an estimated savings rate.
+
+### Model, effort, budget, cache, and advanced fields
+
+- **Model/effort.** An empty provider/model pair follows the session; an
+  explicit pair is saved atomically and never changes the main session model. A
+  model that is not in the host's allowed candidate list is kept and marked
+  (the list is host metadata, not a silent replacement rule), and a known
+  unsupported effort is marked as an error. An empty effort means the selected
+  model's default. Candidate metadata comes from
+  [GET /better-compact/api/models](#read-only-inspect-and-models-api); when it
+  is unavailable the page says capability is unknown and keeps free-text
+  provider/model/effort available.
+- **Native mode.** Enhanced reasoning effort and cache priority are visible but
+  disabled with "not applicable: the native implementation decides"; the saved
+  enhanced values are kept for switching back and are not claimed to have
+  applied.
+- **Budget/retention.** The diagram uses `inspect.budget` only: context window,
+  current tokens, fixed system/tools prefix, earlier-history region, retained
+  tail, the configured `thresholdRatio` plus the effective `thresholdTokens`,
+  and the output-reserve/headroom zone after the trigger. It states that the
+  exact output-reserve/headroom split is not exposed by the payload. Retention
+  is either a ratio or absolute tokens (saving one writes the other as an
+  unset op); the resolved safe cut comes from `inspect.preview` or the page says
+  "no computable safe cut". Automatic pressure retention is contrasted with the
+  more aggressive manual/overflow span, and the retained tail is called a
+  budget, not a permanent pin. The before/after composition and
+  `afterUpperBoundTokens` are labelled an upper-bound estimate, not a prediction.
+  Capacity, fixed-prefix, retention-vs-trigger, and no-safe-region diagnostics
+  name the control to adjust.
+- **Cache priority.** The switch copy is exactly
+  "优先复用缓存（尽可能保留 KV Cache 前缀）". The explanation covers prefix reuse,
+  model-switch cost, and prefix invalidation after a replacement; it never claims
+  lossless KV reuse or zero cache loss.
+- **Advanced.** `auto`, `headroomTokens`, `maxTokens`, `compactionRetries`
+  (post-compaction pressure retries) and `maxOverflowRetries` (context-overflow
+  recoveries) are editable with the two retry meanings stated separately.
+  Effective `modelPolicies` are shown read-only; the global form never writes or
+  drops them. There are no handoff-directory, compaction-history, memory, or
+  sidecar controls.
+
+### Saving and apply-on-reload
+
+The page edits one local draft and saves only through
+`form.mutate(ops, expectedRevision)` — one atomic mutation per save, one
+expected revision, no plugin-owned write route. It respects the Host form's
+loading/unavailable/read-only state. If the Host revision changes while the
+draft has staged edits, the page raises an explicit conflict and disables save
+with a "reload host values" action; it does not silently overwrite the newer
+configuration. A refused save or a transport error keeps the draft and never
+shows success. On success the page says **saved — reload profile** and explains
+that refreshing the web page does not reload the engine: restart the DSH process
+to apply the new snapshot.
+
+### Accessibility and known limits
+
+Neutral host surfaces and thin borders are used, with a single accent plus state
+colors only for errors/warnings, tabular numerals, and visible units. The layout
+stacks vertically on narrow screens; the SVGs remain readable; light/dark
+surfaces come from host theme tokens; `prefers-reduced-motion` disables
+transitions. Every control has an accessible label and the diagrams have
+equivalent text. The page is covered by React component tests
+(`react-test-renderer`, fake form/fetch), not by a current-GUI visual check;
+that acceptance belongs to S4. The strategy drawings are illustrations of
+semantics and are not evidence of a live token flow, cache hit rate, or a
+successful compaction.
+
 ## Configuration
 
 The host companion row `dsh-better-compact` owns the schema. Native key names,
@@ -131,7 +248,7 @@ units, and meanings are preserved from `@deepseek-ai/dsh-compaction-basic`
 | `maxOverflowRetries` | `1` | Bounded provider-confirmed context-overflow recoveries; `0` disables recovery. |
 | `modelPolicies` | `[]` | Exact `{provider, model, ...native partial policy}` overrides with native semantics; no visual rule editor in this version. |
 
-The unresolved checks are enforced at load/reload and by the future S3 form:
+The unresolved checks are enforced at load/reload and by the visual settings form:
 mutually exclusive retention forms, an empty/non-empty summarization pair,
 `retainRatio < thresholdRatio`, positive output caps, duplicate/unknown model
 policies, zero headroom without an explicit `maxTokens`, and positive integer
@@ -290,18 +407,41 @@ later failure; "automatic compaction failed" therefore never means "the session
 has no side effects". Inspect preserves the recorded attempt and its error
 instead of claiming a clean rollback.
 
-## Read-only inspect API
+## Read-only inspect and models API
 
 `GET /better-compact/api/inspect`, optional `?sessionId=<id>`.
 
-The route is registered only when **both** a Host webserver and the Host
+`GET /better-compact/api/models` (no session) returns the host's allowed
+candidate routes with their advertised reasoning efforts:
+
+```json
+{
+  "enabled": true,
+  "routes": [{ "provider": "p", "model": "m", "efforts": ["low", "high"], "defaultEffort": "low" }]
+}
+```
+
+The models projection reads the optional host `subagentModelSelection` service's
+`current().allowedModels` and enriches each entry with
+`ctx.llm.resolveModelInfo(provider, model).reasoning.efforts`. It is metadata
+only: no provider I/O, no CLI call, and no model enumeration happens on page
+load. If the service is absent or has no catalog the response is
+`{ "enabled": false, "routes": [] }`; a failed per-route capability lookup only
+empties that route's `efforts`, and the visual page falls back to free-text
+provider/model/effort with an "unknown" capability note. The list is the host's
+allowed-candidate metadata, not proof that a route is usable in the current
+session.
+
+Both routes are registered only when **both** a Host webserver and the Host
 `connection` trust fence exist. A webserver without the fence fails closed: the
-route is not registered and an already-registered handler returns 503 if the
+routes are not registered and an already-registered handler returns 503 if the
 fence disappears. Every request passes `connection.requestRejection(req)`
-(401/403); only `GET` is accepted (405), the query is validated (400 for
+(401/403); only `GET` is accepted (405), the inspect query is validated (400 for
 unknown/duplicate/empty `sessionId`), an unknown/invisible session is 404, and
-every JSON response carries `cache-control: no-store`. There is no write API,
-no cross-origin allowance, and no plugin-owned trust switch.
+every JSON response carries `cache-control: no-store`. The models route is
+session-free and ignores query parameters. There is no write API, no cross-origin
+allowance, and no plugin-owned trust switch. The visual settings page uses these
+payloads as its only source of truth for token/session/status values.
 
 Response fields (unknown values are `null`, never `0`):
 
@@ -310,12 +450,12 @@ Response fields (unknown values are `null`, never `0`):
 | `activeConfig` | The frozen configuration this engine instance holds. No credentials. |
 | `requiresReload` | Saved value differs from `activeConfig` (including a saved value that no longer normalizes). |
 | `sessionId` | Echo of the requested session, or `null` without one. |
-| `diagnostics` | Always an array of read-only strings for S3. It carries token-meter/model-info failures, budget-capacity reasons, last-summary budget omissions, and the engine-applicability reason (empty when everything is available). |
+| `diagnostics` | Always an array of read-only strings for the visual settings page. It carries token-meter/model-info failures, budget-capacity reasons, last-summary budget omissions, and the engine-applicability reason (empty when everything is available). |
 | `engine` | `null` without a session, else `{owner, inspectApplies, reason}`. `owner` is `host`, `better-compact-preset`, `foreign-preset`, or `unknown`. A **foreign preset** (the shipped Web `standard` preset, for example) runs its own native engine, so `inspectApplies: false`, `budget`/`preview` are `null`, and `lastCompaction` is still projected from that session's real events. A cold/non-live session cannot prove ownership and is reported `unknown` with the active configuration. |
 | `budget` | `null` without a session, else `{contextWindow, currentTokens, measurement, fixedTokens, thresholdTokens, retainTokens, summaryMaxTokens}`. `measurement` is `measured` (provider-usage anchor), `estimated` (fixed heuristic), or `unavailable`. |
 | `preview` | `null` without a usable session, else `{beforeTokens, afterUpperBoundTokens, rangeStart, rangeEnd, reason}`. `rangeStart`/`rangeEnd` are native surface seqs from the automatic-pressure safe-cut rule; `afterUpperBoundTokens` includes the summary output budget and is an upper-bound estimate, not a prediction. `reason` explains below-trigger/no-range/unavailable. |
 | `lastCompaction` | `null` when no compaction exists, else `{id, trigger, status, mode, beforeTokens, afterTokens, durationMs, cacheReadTokens, cacheWriteTokens, error}` projected only from real events/usage. |
-| `handoffContinuation` | `null` until this process makes a manual handoff continuation decision, else `{compactionId, status: 'scheduled'\|'skipped', blockers, at}`. `blockers` names queued input, paused/blocked goal, pending question, running job, running child, cancellation, or a queue failure so S3 can show why nothing continued. |
+| `handoffContinuation` | `null` until this process makes a manual handoff continuation decision, else `{compactionId, status: 'scheduled'\|'skipped', blockers, at}`. `blockers` names queued input, paused/blocked goal, pending question, running job, running child, cancellation, or a queue failure so the visual settings page can show why nothing continued. |
 
 `lastCompaction` rules:
 
@@ -375,27 +515,33 @@ Verified in this repository (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)):
 - unit tests (`node --test`) for config validation/defaults, native budget
   formulas and safe-cut selection, prompt/state/redaction, handoff file
   permissions/read-back, engine routing/effort/failure/continuation gating,
-  inspect projection/null semantics/fence, preset copy, client slots;
+  inspect projection/null semantics/fence, models-route projection/fence,
+  preset copy, and the visual client's mode cards, model/effort, budget,
+  retention, save/revision/conflict/transport, status and accessibility states
+  with fake form/fetch;
 - a real-profile smoke with a temp `DSH_HOME`, scripted LLM adapter, real
   AgentLoop/session log/token meter/commands/settings/config-editor/webserver,
   real Connection authentication, real job registry, and real child agents:
   automatic pressure, manual `/compact`, native event sequence, authenticated
-  inspect over HTTP (401/400/404/405/no-store), failure/recovery, handoff file
-  + redacted raw output + one continuation + replay after file deletion, a real
-  standard-preset foreign-engine session, injected durability-flush failure
-  (`session/flush` listener; the real JSONL writer still runs), in-flight
-  cancellation, commit-stage append failure, pending-question/job/child
-  continuation gates, preset isolation/no double-compaction, and save →
-  reload → `activeConfig` update. Manual handoff continuation is exercised on
-  the host-plane engine; the preset engine's automatic path is covered, and the
-  preset manual path shares the same engine code. Run the exact commands for the
-  current test counts.
+  inspect over HTTP (401/400/404/405/no-store), the models route over the same
+  fence and its real allowed-model catalog (401/405/no-store), failure/recovery,
+  handoff file + redacted raw output + one continuation + replay after file
+  deletion, a real standard-preset foreign-engine session, injected
+  durability-flush failure (`session/flush` listener; the real JSONL writer still
+  runs), in-flight cancellation, commit-stage append failure, pending-
+  question/job/child continuation gates, preset isolation/no double-compaction,
+  and save → reload → `activeConfig` update. Manual handoff continuation is
+  exercised on the host-plane engine; the preset engine's automatic path is
+  covered, and the preset manual path shares the same engine code. Run the exact
+  commands for the current test counts.
 
-The current build was verified with **88 unit/component tests** and **44
+The current build was verified with **115 unit/component tests** and **45
 real-profile smoke checks** at commit time; always prefer the fresh command
 output over these numbers.
 
 **Not verified here:** real-model summary fidelity, reasoning-effort quality,
-provider cache-read/write hit rates against a real provider, and the S3 visual
-settings page (this version ships a minimal read-only config-slot page). Do not
-infer those from the controlled-provider tests.
+provider cache-read/write hit rates against a real provider, and a visual/
+keyboard acceptance pass in the current GUI. The visual settings behavior above
+is covered by React component tests and the backend routes by the real-profile
+smoke; the current GUI/URL check belongs to S4. Do not infer GUI acceptance from
+the controlled-provider or component tests.

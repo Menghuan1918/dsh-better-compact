@@ -12,6 +12,8 @@
  *   - automatic pressure compaction with exact native event sequence;
  *   - inspect GET over the real Host webserver (200/400/404/405/no-store) and
  *     live/cold/unknown session semantics, with a read-only event-count check;
+ *   - models GET over the same fence: the real host allowed-model catalog with
+ *     advertised efforts, 401 unauthenticated, 405 for a write verb, no-store;
  *   - goal/todo state in the summary instruction and authoritative-state rules;
  *   - manual /compact success, failure mapping and no-op;
  *   - automatic summary failure keeps the original surface and the turn;
@@ -418,6 +420,24 @@ async function runTurn(agent, recorder, text, expected = 'completed') {
   return end
 }
 
+/** Read the read-only models endpoint over the real Host webserver. */
+async function modelsHttp(ctx, options = {}) {
+  const base = ctx.get('webServer').getOrigin()
+  const cookie = options.cookie === undefined ? inspectorCookie : options.cookie
+  const response = await fetch(`${base}/better-compact/api/models`, {
+    method: options.method ?? 'GET',
+    ...(cookie === null ? {} : { headers: { cookie } }),
+  })
+  const text = await response.text()
+  let json
+  try {
+    json = JSON.parse(text)
+  } catch {
+    json = undefined
+  }
+  return { response, text, json }
+}
+
 /** Read the inspect endpoint over the real Host webserver. */
 async function inspectHttp(ctx, sessionId, options = {}) {
   const base = ctx.get('webServer').getOrigin()
@@ -510,6 +530,22 @@ try {
   assert.equal(bare.json.sessionId, null)
   assert.equal(bare.json.budget, null)
   check('inspect-plugin-state')
+
+  // Models metadata: the real host allowed-model selection is the candidate
+  // source; the route is read-only, fenced and never enumerated from a CLI.
+  const models = await modelsHttp(ctx)
+  assert.equal(models.response.status, 200)
+  assert.equal(models.response.headers.get('cache-control'), 'no-store')
+  assert.equal(models.json.enabled, true)
+  assert.deepEqual(models.json.routes, [
+    { provider: 'it-noop', model: 'noop', efforts: ['low', 'high'], defaultEffort: '' },
+  ])
+  const modelsUnauthenticated = await modelsHttp(ctx, { cookie: null })
+  assert.equal(modelsUnauthenticated.response.status, 401)
+  const modelsPost = await modelsHttp(ctx, { method: 'POST' })
+  assert.equal(modelsPost.response.status, 405)
+  assert.equal(modelsPost.response.headers.get('allow'), 'GET')
+  check('models-route-allowed-catalog')
 
   // ── Agent A: automatic pressure + goal/todo state ────────────────────────
   const agentA = await createHostAgent(ctx)
