@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { handleInspect } from '../src/index.js'
+import { apply, handleInspect } from '../src/index.js'
 import { readConfig } from '../src/config.js'
 
 const config = readConfig({ mode: 'goal' })
@@ -34,6 +34,10 @@ function ctxWith(connection) {
     },
   }
 }
+
+/** The route is only registered with a fence; tests that bypass registration
+ * still provide the same contract explicitly. */
+const allowFence = { requestRejection: () => undefined }
 
 test('the Host connection fence rejects before method, query, or session work', async () => {
   for (const status of [401, 403]) {
@@ -71,8 +75,44 @@ test('a failing connection fence returns a readable 503 instead of crashing', as
   assert.equal(res.headers['cache-control'], 'no-store')
 })
 
+test('a missing connection fence fails closed with 503', async () => {
+  const res = fakeResponse()
+  await handleInspect(ctxWith(undefined), companion, fakeRequest(), res)
+  assert.equal(res.statusCode, 503)
+  assert.match(res.body, /INSPECT_UNAVAILABLE/)
+  assert.equal(res.headers['cache-control'], 'no-store')
+})
+
+test('the route registration waits for both webServer and connection', () => {
+  const provided = {}
+  const injections = []
+  const effects = []
+  const ctx = {
+    provide: (name, value) => {
+      provided[name] = value
+    },
+    inject: (names, callback) => {
+      injections.push(names)
+      // Simulate a composition with only webServer: the callback must not run.
+      if (names.includes('connection')) return undefined
+      callback({ webServer: { register: () => () => undefined } })
+    },
+    effect: (fn) => {
+      effects.push(fn)
+    },
+    logger: { warn: () => undefined },
+    fiber: {},
+  }
+  apply(ctx, { mode: 'goal' })
+  assert.deepEqual(injections[0], ['settings'])
+  assert.deepEqual(injections[1], ['webServer', 'connection'])
+  // The gated callback body never ran, so no route effect was registered.
+  assert.equal(effects.includes('unreachable'), false)
+  assert.ok(provided.betterCompactConfig)
+})
+
 test('invalid query and unsupported methods are rejected with no-store JSON', async () => {
-  const ctx = ctxWith(undefined)
+  const ctx = ctxWith(allowFence)
   const cases = [
     { request: { method: 'GET', url: '/better-compact/api/inspect?bogus=1' }, status: 400 },
     { request: { method: 'GET', url: '/better-compact/api/inspect?sessionId=a&sessionId=b' }, status: 400 },
@@ -91,7 +131,7 @@ test('invalid query and unsupported methods are rejected with no-store JSON', as
 
 test('a valid plugin-state request returns exactly the documented fields', async () => {
   const res = fakeResponse()
-  await handleInspect(ctxWith(undefined), companion, fakeRequest(), res)
+  await handleInspect(ctxWith(allowFence), companion, fakeRequest(), res)
   assert.equal(res.statusCode, 200)
   assert.equal(res.headers['cache-control'], 'no-store')
   const payload = JSON.parse(res.body)

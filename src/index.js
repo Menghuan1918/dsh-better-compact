@@ -102,23 +102,31 @@ export async function handleInspect(ctx, companion, req, res) {
       return undefined
     }
   })()
-  if (typeof connection?.requestRejection === 'function') {
-    let rejection
-    try {
-      rejection = connection.requestRejection(req)
-    } catch (error) {
-      sendJson(res, 503, {
-        code: 'CONNECTION_FENCE_UNAVAILABLE',
-        message: `the host connection fence failed: ${error instanceof Error ? error.message : String(error)}`,
-      })
-      return
-    }
-    if (rejection !== undefined) {
-      res.statusCode = rejection
-      res.setHeader('cache-control', 'no-store')
-      res.end()
-      return
-    }
+  if (typeof connection?.requestRejection !== 'function') {
+    // Fail closed. The route is only registered when the Host connection fence
+    // exists, and a service that disappears later must not expose unauthenticated
+    // session reads.
+    sendJson(res, 503, {
+      code: 'INSPECT_UNAVAILABLE',
+      message: 'the host connection trust fence is unavailable; the inspect route is disabled',
+    })
+    return
+  }
+  let rejection
+  try {
+    rejection = connection.requestRejection(req)
+  } catch (error) {
+    sendJson(res, 503, {
+      code: 'CONNECTION_FENCE_UNAVAILABLE',
+      message: `the host connection fence failed: ${error instanceof Error ? error.message : String(error)}`,
+    })
+    return
+  }
+  if (rejection !== undefined) {
+    res.statusCode = rejection
+    res.setHeader('cache-control', 'no-store')
+    res.end()
+    return
   }
   if (req.method !== 'GET') {
     sendMethodNotAllowed(res, 'GET')
@@ -176,8 +184,15 @@ export function apply(ctx, config = {}) {
     }
   })
 
-  // Optional Web surface: headless compositions have no webserver.
-  ctx.inject(['webServer'], (inner) => {
+  // Optional Web surface: headless compositions have no webserver and no
+  // connection fence, so the inspect route is simply not registered. Waiting
+  // for both services makes "no connection" fail closed instead of exposing an
+  // unauthenticated read route.
+  ctx.inject(['webServer', 'connection'], (inner) => {
+    if (typeof inner.connection?.requestRejection !== 'function') {
+      inner.logger?.warn?.('dsh-better-compact: inspect route disabled because the Host connection fence is unavailable')
+      return
+    }
     inner.effect(
       () =>
         inner.webServer.register({
