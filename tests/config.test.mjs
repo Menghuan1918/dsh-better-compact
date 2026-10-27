@@ -114,12 +114,31 @@ test('toNativeConfig strips enhanced-only keys and keeps native meanings', () =>
   }
 })
 
+test('the Config schema rejects exclusive ratio boundaries before readConfig runs', () => {
+  assert.throws(() => Config({ thresholdRatio: 0 }), /ratio must be a number in \(0, 1\)/)
+  assert.throws(() => Config({ thresholdRatio: 1 }), /ratio must be a number in \(0, 1\)/)
+  assert.throws(() => Config({ retainRatio: 0 }), /ratio must be a number in \(0, 1\)/)
+  assert.throws(() => Config({ retainRatio: 1 }), /ratio must be a number in \(0, 1\)/)
+  assert.throws(
+    () => Config({ modelPolicies: [{ provider: 'p', model: 'm', retainRatio: 0 }] }),
+    /ratio must be a number in \(0, 1\)/,
+  )
+  assert.throws(
+    () => Config({ modelPolicies: [{ provider: 'p', model: 'm', thresholdRatio: 1 }] }),
+    /ratio must be a number in \(0, 1\)/,
+  )
+  const parsed = Config({})
+  assert.equal(parsed.thresholdRatio.get(), 0.8)
+})
+
 test('readConfig rejects conflicting or invalid settings', () => {
   const cases = [
     () => readConfig({ ...rawDefaults(), retainRatio: 0.2, retainTokens: 100 }),
     () => readConfig({ ...rawDefaults(), summarizationProvider: 'p' }),
     () => readConfig({ ...rawDefaults(), summarizationModel: 'm' }),
     () => readConfig({ ...rawDefaults(), retainRatio: 0.8 }),
+    () => readConfig({ ...rawDefaults(), retainRatio: 0 }),
+    () => readConfig({ ...rawDefaults(), retainRatio: 1 }),
     () => readConfig({ ...rawDefaults(), thresholdRatio: 0 }),
     () => readConfig({ ...rawDefaults(), thresholdRatio: 1 }),
     () => readConfig({ ...rawDefaults(), mode: 'off' }),
@@ -186,6 +205,32 @@ test('modelPolicies preserve native exact-target semantics and validation', () =
   })
   assert.equal(emptyPair.modelPolicies[0].summarizationProvider, '')
   assert.equal(emptyPair.modelPolicies[0].summarizationModel, '')
+})
+
+test('a policy threshold cannot fall below an inherited global ratio retention', () => {
+  assert.throws(
+    () =>
+      normalize({
+        retainRatio: 0.5,
+        modelPolicies: [{ provider: 'p', model: 'm', thresholdRatio: 0.4 }],
+      }),
+    /inherited retainRatio \(0.5\) must be less than the resolved thresholdRatio \(0.4\)/,
+  )
+  // Absolute retention has no ratio to conflict with at load time.
+  const absolute = normalize({
+    retainTokens: 100,
+    modelPolicies: [{ provider: 'p', model: 'm', thresholdRatio: 0.4 }],
+  })
+  assert.equal(absolute.modelPolicies[0].thresholdRatio, 0.4)
+  // An explicit policy ratio is checked by normalizePolicy already.
+  assert.throws(
+    () =>
+      normalize({
+        retainRatio: 0.1,
+        modelPolicies: [{ provider: 'p', model: 'm', thresholdRatio: 0.4, retainRatio: 0.45 }],
+      }),
+    /must be less than/,
+  )
 })
 
 test('a policy-level headroom becomes that policy maxTokens only when global maxTokens is absent', () => {

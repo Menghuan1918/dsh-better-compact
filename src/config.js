@@ -95,13 +95,34 @@ export const DEFAULTS = Object.freeze({
   modelPolicies: Object.freeze([]),
 })
 
+/**
+ * A ratio strictly inside `(0, 1)`.
+ *
+ * The spec requires positive values below 1 for both the trigger and the
+ * retention fraction. Schemastery's `.min/.max` are inclusive, so a tiny
+ * transform carries the exclusive bound; keeping it on the leaf preserves the
+ * per-field `.volatile()` form the settings service reads.
+ */
+function ratioSchema(defaultValue) {
+  const schema = z.transform(
+    z.number(),
+    (value, options) => {
+      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value >= 1) {
+        throw new z.ValidationError(`ratio must be a number in (0, 1), got ${String(value)}`, options ?? {})
+      }
+      return value
+    },
+  )
+  return defaultValue === undefined ? schema : schema.default(defaultValue)
+}
+
 /** One optional native policy fragment; omitted keys inherit the target. */
 const modelPolicySchema = z.object({
   provider: z.string().required(),
   model: z.string().required(),
-  thresholdRatio: z.number().min(0).max(1),
+  thresholdRatio: ratioSchema(),
   headroomTokens: z.natural(),
-  retainRatio: z.number().min(0).max(1),
+  retainRatio: ratioSchema(),
   retainTokens: z.natural(),
   summarizationProvider: z.string(),
   summarizationModel: z.string(),
@@ -124,9 +145,9 @@ const modelPolicySchema = z.object({
 export const Config = z.object({
   mode: z.union([...MODES]).default(DEFAULTS.mode).volatile(),
   auto: z.boolean().default(DEFAULTS.auto).volatile(),
-  thresholdRatio: z.number().min(0).max(1).default(DEFAULTS.thresholdRatio).volatile(),
+  thresholdRatio: ratioSchema(DEFAULTS.thresholdRatio).volatile(),
   headroomTokens: z.natural().default(DEFAULTS.headroomTokens).volatile(),
-  retainRatio: z.number().min(0).max(1).volatile(),
+  retainRatio: ratioSchema().volatile(),
   retainTokens: z.natural().volatile(),
   summarizationProvider: z.string().default(DEFAULTS.summarizationProvider).volatile(),
   summarizationModel: z.string().default(DEFAULTS.summarizationModel).volatile(),
@@ -240,7 +261,7 @@ function normalizePolicy(source, name, thresholdRatio) {
 }
 
 /** Validate, detach, and reject duplicate exact-target overrides. */
-function normalizeModelPolicies(source, thresholdRatio, globalMaxTokensExplicit) {
+function normalizeModelPolicies(source, thresholdRatio, globalMaxTokensExplicit, globalRetention) {
   if (source === undefined) return []
   if (!Array.isArray(source)) throw new TypeError('modelPolicies must be an array')
   const seen = new Set()
@@ -266,6 +287,18 @@ function normalizeModelPolicies(source, thresholdRatio, globalMaxTokensExplicit)
     seen.add(key)
     const resolvedThreshold = present(entry.thresholdRatio) ? entry.thresholdRatio : thresholdRatio
     const policy = normalizePolicy(entry, `modelPolicies[${index}]`, resolvedThreshold)
+    // A policy can lower its threshold while inheriting the global ratio
+    // retention. The native resolver rejects that combination at load; reject it
+    // here with the same actionable diagnostic instead of failing later.
+    if (policy.retainRatio === undefined && policy.retainTokens === undefined) {
+      if (globalRetention.retainTokens !== null) {
+        // Inherited absolute retention has no ratio to compare at load.
+      } else if (globalRetention.retainRatio !== null && globalRetention.retainRatio >= resolvedThreshold) {
+        throw new TypeError(
+          `modelPolicies[${index}]: inherited retainRatio (${globalRetention.retainRatio}) must be less than the resolved thresholdRatio (${resolvedThreshold})`,
+        )
+      }
+    }
     // Native rule: with no explicit global maxTokens, a policy-level headroom
     // becomes that policy's summary output cap. Preserve it here so the routed
     // policy resolves exactly like the native engine.
@@ -376,6 +409,7 @@ export function readConfig(config) {
     fieldOf(source, 'modelPolicies'),
     thresholdRatio,
     globalMaxTokensExplicit,
+    { retainRatio, retainTokens },
   )
 
   return deepFreeze({
