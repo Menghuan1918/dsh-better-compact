@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
   HANDOFF_DIR_PREFIX,
   HANDOFF_FILE_MODE,
+  handoffPermissionPolicy,
   prepareHandoffFile,
   safeSessionComponent,
   writeHandoffFile,
@@ -29,6 +30,37 @@ test('writeHandoffFile writes an owner-only file under the OS temp dir and reads
     assert.equal(readBack, written.body)
     assert.match(readBack, new RegExp(`actual path: ${written.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
     assert.equal(written.bytes, Buffer.byteLength(written.body, 'utf8'))
+  } finally {
+    for (const directory of created) await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('Windows has no POSIX mode proof; handoff works with synthetic stat modes', async () => {
+  assert.equal(handoffPermissionPolicy('win32'), 'windows-owner-temp')
+  assert.equal(handoffPermissionPolicy('linux'), 'posix-0600')
+  assert.equal(handoffPermissionPolicy('darwin'), 'posix-0600')
+  const created = []
+  try {
+    // Windows stat reports 0666/0444 derived from the read-only attribute.
+    const written = await writeHandoffFile({
+      sessionId: 'windows-session',
+      body: '# Handoff\n\nwindows',
+      platform: 'win32',
+      statFile: async () => ({ isFile: () => true, mode: 0o100666 }),
+    })
+    created.push(written.directory)
+    assert.equal(written.permissionPolicy, 'windows-owner-temp')
+    assert.equal(await readFile(written.path, 'utf8'), written.body)
+    await assert.rejects(
+      () =>
+        writeHandoffFile({
+          sessionId: 'posix-session',
+          body: '# Handoff\n\nposix',
+          platform: 'linux',
+          statFile: async () => ({ isFile: () => true, mode: 0o100666 }),
+        }),
+      /has mode 666; expected 600/,
+    )
   } finally {
     for (const directory of created) await rm(directory, { recursive: true, force: true })
   }

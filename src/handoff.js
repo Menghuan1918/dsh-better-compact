@@ -21,8 +21,26 @@ import { randomUUID } from 'node:crypto'
 export const HANDOFF_DIR_PREFIX = 'dsh-better-compact-'
 /** File mode: owner read/write only. */
 export const HANDOFF_FILE_MODE = 0o600
-/** Directory mode: owner access only. */
+/** Directory mode: owner access only (POSIX). */
 export const HANDOFF_DIR_MODE = 0o700
+
+/**
+ * Permission proof used for the handoff file.
+ *
+ * POSIX systems expose the requested `0600` mode through `stat().mode`.
+ * Windows has no POSIX mode bits: Node reports a synthetic value derived from
+ * the read-only attribute (`0666` or `0444`), and `chmod` only toggles that
+ * attribute. The file still lives under the per-user `%TEMP%` directory, which
+ * is the platform's owner-only boundary; an ACL check is not available from
+ * Node's standard library without native modules, so the POSIX mode assertion
+ * is skipped there rather than failing every legitimate write.
+ *
+ * @param {string} [platform] - Node `process.platform` value.
+ * @returns {'posix-0600' | 'windows-owner-temp'} the proof policy that applies.
+ */
+export function handoffPermissionPolicy(platform = process.platform) {
+  return platform === 'win32' ? 'windows-owner-temp' : 'posix-0600'
+}
 
 /**
  * Sanitize a session id into a path-safe, still-recognizable component.
@@ -59,11 +77,16 @@ export async function prepareHandoffFile(input = {}) {
  * @param {(path: string) => string} [input.makeBody] - body factory receiving the real path (wins over `body`).
  * @param {string} [input.attemptId] - attempt correlation id (a UUID by default).
  * @param {string} [input.createdAt] - ISO timestamp used in the file name.
- * @returns {Promise<{path: string, directory: string, bytes: number, attemptId: string, body: string}>} verified file facts.
+ * @param {string} [input.platform] - platform override for tests (defaults to `process.platform`).
+ * @param {(path: string) => Promise<{isFile: () => boolean, mode: number}>} [input.statFile] - stat seam for tests.
+ * @returns {Promise<{path: string, directory: string, bytes: number, attemptId: string, body: string, permissionPolicy: string}>} verified file facts.
  * @throws {Error} when the directory, write, permission, or read-back check fails.
  */
 export async function writeHandoffFile(input) {
   const prepared = await prepareHandoffFile(input)
+  const platform = input.platform ?? process.platform
+  const permissionPolicy = handoffPermissionPolicy(platform)
+  const statFile = input.statFile ?? stat
   const body = typeof input.makeBody === 'function' ? input.makeBody(prepared.path) : input.body
   if (typeof body !== 'string' || body.trim().length === 0) {
     throw new Error('handoff: refusing to write an empty document')
@@ -71,9 +94,9 @@ export async function writeHandoffFile(input) {
   try {
     await writeFile(prepared.path, body, { encoding: 'utf8', mode: HANDOFF_FILE_MODE, flag: 'wx' })
     await chmod(prepared.path, HANDOFF_FILE_MODE)
-    const info = await stat(prepared.path)
+    const info = await statFile(prepared.path)
     if (!info.isFile()) throw new Error(`handoff file ${prepared.path} is not a regular file`)
-    if ((info.mode & 0o777) !== HANDOFF_FILE_MODE) {
+    if (permissionPolicy === 'posix-0600' && (info.mode & 0o777) !== HANDOFF_FILE_MODE) {
       throw new Error(
         `handoff file ${prepared.path} has mode ${(info.mode & 0o777).toString(8)}; expected 600 (owner-only)`,
       )
@@ -82,7 +105,12 @@ export async function writeHandoffFile(input) {
     if (readBack !== body) {
       throw new Error(`handoff file ${prepared.path} did not read back identically; refusing to install the checkpoint`)
     }
-    return { ...prepared, bytes: Buffer.byteLength(body, 'utf8'), body }
+    return {
+      ...prepared,
+      bytes: Buffer.byteLength(body, 'utf8'),
+      body,
+      permissionPolicy,
+    }
   } catch (error) {
     // The attempt directory is left for debugging; no global cleanup scheduler
     // is introduced, and the session checkpoint is not installed by the caller.
