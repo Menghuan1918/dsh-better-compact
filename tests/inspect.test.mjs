@@ -1,11 +1,18 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { readConfig } from '../src/config.js'
-import { InspectError, buildBudgetPreview, inspectPlugin, projectLastCompaction } from '../src/inspect.js'
+import {
+  InspectError,
+  NATIVE_CHECKPOINT_FRAMING_TOKENS,
+  buildBudgetPreview,
+  inspectPlugin,
+  projectLastCompaction,
+} from '../src/inspect.js'
 import {
   markSummaryEnd,
   markSummaryStart,
   recordCompactionFailure,
+  recordContinuationOutcome,
   resetLiveRegistry,
 } from '../src/live.js'
 
@@ -172,6 +179,17 @@ test('projectLastCompaction distinguishes automatic, failed, cancelled, running 
   assert.equal(persistence.mode, null)
 })
 
+test('projectLastCompaction surfaces a recorded failure on an open bracket', () => {
+  resetLiveRegistry()
+  const events = [event('compaction/start', { compactionId: 'c9', turn: null }, 0, 10)]
+  const session = fakeSession(events)
+  recordCompactionFailure(session, 'failed', 'simulated append failure', 'c9')
+  const record = projectLastCompaction(events, 'session-1')
+  assert.equal(record.status, 'failed')
+  assert.equal(record.error, 'simulated append failure')
+  assert.equal(record.mode, null)
+})
+
 test('projectLastCompaction returns null when no compaction exists', () => {
   resetLiveRegistry()
   assert.equal(projectLastCompaction([], 'session-1'), null)
@@ -234,7 +252,7 @@ test('buildBudgetPreview reports threshold, retain, fixed prefix and a below-tri
   assert.equal(preview.rangeStart, 2)
   assert.equal(preview.rangeEnd, 3)
   // fixed 10 + tail node3 100 + maxTokens 50
-  assert.equal(preview.afterUpperBoundTokens, 160)
+  assert.equal(preview.afterUpperBoundTokens, 160 + NATIVE_CHECKPOINT_FRAMING_TOKENS)
   assert.match(preview.reason, /below the automatic trigger 500/)
 
   const disabled = buildBudgetPreview({
@@ -325,9 +343,11 @@ test('inspectPlugin without a session returns only plugin state', async () => {
     activeConfig: config,
     requiresReload: false,
     sessionId: null,
+    engine: null,
     budget: null,
     preview: null,
     lastCompaction: null,
+    handoffContinuation: null,
   })
   assert.deepEqual(JSON.parse(JSON.stringify(payload)), payload)
 })
@@ -413,7 +433,10 @@ test('inspectPlugin inspects a live session and never calls the LLM or mutates i
   assert.equal(payload.lastCompaction.trigger, 'manual')
   assert.equal(payload.preview.rangeStart, 2)
   assert.equal(payload.preview.rangeEnd, 3)
-  assert.equal(payload.preview.afterUpperBoundTokens, 480)
+  assert.equal(payload.preview.afterUpperBoundTokens, 480 + NATIVE_CHECKPOINT_FRAMING_TOKENS)
+  assert.equal(payload.engine.owner, 'unknown')
+  assert.equal(payload.engine.inspectApplies, true)
+  assert.equal(payload.handoffContinuation, null)
 })
 
 test('inspectPlugin maps unknown, invisible and unavailable sessions', async () => {
@@ -489,4 +512,101 @@ test('inspectPlugin reads a cold session through observeSession and reports unkn
   assert.equal(payload.preview.beforeTokens, 0)
   assert.equal(payload.preview.rangeStart, null)
   assert.match(payload.preview.reason, /no routed request/)
+  assert.equal(payload.engine.owner, 'unknown')
+  assert.equal(payload.handoffContinuation, null)
+})
+
+test('inspect flags a foreign preset engine and keeps only real-event lastCompaction', async () => {
+  resetLiveRegistry()
+  const events = [
+    event('request/header', { header: { config: { provider: 'p', model: 'm' } }, reason: 'initial' }, 0),
+    event('user/message', { role: 'user', id: 'u', content: text('a'), source: { kind: 'user' } }, 1),
+    event('compaction/start', { compactionId: 'foreign-1', turn: null }, 2, 10),
+    event('compaction/summary', {
+      compactionId: 'foreign-1',
+      summary: text('## Primary Request and Intent\n## Critical Context'),
+      shadowedTokenCount: 30,
+    }, 3, 20),
+    event('user/message', {
+      role: 'user',
+      id: 'u2',
+      content: text('ckpt'),
+      source: { kind: 'compact-checkpoint', compactionId: 'foreign-1' },
+    }, 4, 30),
+    event('compaction/end', { compactionId: 'foreign-1', turn: null }, 5, 40),
+  ]
+  const session = fakeSession(events, { config: { provider: 'p', model: 'm' } })
+  const agent = { id: 'session-1', session, ctx: {} }
+  class NativeEngine {}
+  const native = new NativeEngine()
+  let measured = 0
+  const ctx = {
+    get: (name) => {
+      if (name === 'agents') return { get: () => agent }
+      if (name === 'agentPresets') return { serviceFor: () => native }
+      if (name === 'compaction') return { constructor: { betterCompactEngine: true } }
+      if (name === 'tokenMeter') return { measure: () => { measured += 1; return { nodes: [], totalTokens: 0, surfaceTokens: 0, baseline: { kind: 'none' } } } }
+      return undefined
+    },
+  }
+  const payload = await inspectPlugin(ctx, companionFor(normalized()), 'session-1')
+  assert.equal(measured, 0, 'foreign engine sessions must not be metered by this plugin')
+  assert.equal(payload.engine.owner, 'foreign-preset')
+  assert.equal(payload.engine.inspectApplies, false)
+  assert.match(payload.engine.reason, /different compaction engine/)
+  assert.equal(payload.budget, null)
+  assert.equal(payload.preview, null)
+  assert.equal(payload.lastCompaction.id, 'foreign-1')
+  assert.equal(payload.lastCompaction.status, 'completed')
+  assert.equal(payload.lastCompaction.mode, 'native')
+})
+
+test('inspect applies to a session on the better-compact preset engine', async () => {
+  resetLiveRegistry()
+  const events = [
+    event('request/header', { header: { config: { provider: 'p', model: 'm' } }, reason: 'initial' }, 0),
+    event('user/message', { role: 'user', id: 'u', content: text('a'), source: { kind: 'user' } }, 1),
+  ]
+  const session = fakeSession(events, { config: { provider: 'p', model: 'm' } })
+  const agent = { id: 'session-1', session, ctx: {} }
+  class BetterCompactEngine {
+    static betterCompactEngine = true
+  }
+  const mounted = new BetterCompactEngine()
+  const ctx = {
+    get: (name) => {
+      if (name === 'agents') return { get: () => agent }
+      if (name === 'agentPresets') return { serviceFor: () => mounted }
+      if (name === 'llm') return { resolveModelInfo: async () => ({ provider: 'p', id: 'm', name: 'm', context: { contextWindow: 1000 } }) }
+      if (name === 'tokenMeter') return { measure: () => ({ nodes: [{ seq: 1, tokens: 10, heuristicTokens: 10 }], totalTokens: 10, surfaceTokens: 10, baseline: { kind: 'none' } }) }
+      return undefined
+    },
+  }
+  const payload = await inspectPlugin(ctx, companionFor(normalized()), 'session-1')
+  assert.equal(payload.engine.owner, 'better-compact-preset')
+  assert.equal(payload.engine.inspectApplies, true)
+  assert.equal(payload.budget.contextWindow, 1000)
+})
+
+test('inspect exposes the latest handoff continuation decision', async () => {
+  resetLiveRegistry()
+  recordContinuationOutcome('session-1', {
+    compactionId: 'c1',
+    status: 'skipped',
+    blockers: ['a user question is still pending'],
+    at: 123,
+  })
+  const ctx = {
+    get: (name) => {
+      if (name === 'agents') return { get: () => ({ id: 'session-1', session: fakeSession([]) }) }
+      return undefined
+    },
+  }
+  const payload = await inspectPlugin(ctx, companionFor(normalized()), 'session-1')
+  assert.deepEqual(payload.handoffContinuation, {
+    compactionId: 'c1',
+    status: 'skipped',
+    blockers: ['a user question is still pending'],
+    at: 123,
+  })
 })

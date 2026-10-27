@@ -17,7 +17,6 @@
  */
 
 import z from '@deepseek-ai/schemastery'
-import { symbols } from '@deepseek-ai/cordis'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { ManualCompactionError } from '@deepseek-ai/dsh-compaction'
 import {
@@ -35,6 +34,7 @@ import {
   buildInstruction,
   composeHandoffDocument,
   continuationText,
+  redactContentBlocks,
   redactSecrets,
   renderStateBlock,
 } from './prompts.js'
@@ -46,7 +46,9 @@ import {
   markSummaryEnd,
   markSummaryStart,
   recordCompactionFailure,
+  recordContinuationOutcome,
 } from './live.js'
+import { serviceIdentity } from './identity.js'
 
 /** Empty engine row config: every setting lives on the host companion row. */
 const EMPTY_CONFIG = z.object({})
@@ -96,16 +98,6 @@ function classifyFailure(error) {
   return isCancellation(error) ? 'cancelled' : 'failed'
 }
 
-/**
- * Compare a service proxy with the implementation value returned by
- * `agentPresets.serviceFor()`: cordis wraps services in proxies, and the
- * retained-composition lookup returns the raw implementation, so only the
- * underlying identity is comparable.
- */
-function serviceIdentity(value) {
-  return value?.[symbols.original] ?? value
-}
-
 /** Build the target-resolution failure used when no route exists. */
 function noTargetError() {
   return new LlmError(
@@ -146,9 +138,11 @@ export class BetterCompactEngine extends BasicCompactionEngine {
    * Native mode delegates entirely to the inherited implementation.
    */
   async summarize(input, agent, signal) {
-    if (this.mode === 'native') return super.summarize(input, agent, signal)
+    // Native attempts are marked too, so inspect can distinguish a live
+    // in-flight attempt from an orphaned durable bracket.
     markSummaryStart(agent.session, this.mode)
     try {
+      if (this.mode === 'native') return await super.summarize(input, agent, signal)
       return await this._summarizeEnhanced(input, agent, signal)
     } finally {
       markSummaryEnd(agent.session.id)
@@ -351,7 +345,10 @@ export class BetterCompactEngine extends BasicCompactionEngine {
 
     return {
       summary: [{ type: 'text', text: finalText }],
-      rawOutput,
+      // The provider output is persisted on compaction/summary and rendered by
+      // the trajectory UI. Handoff output must be redacted there too, not only
+      // in the visible checkpoint summary.
+      rawOutput: this.mode === 'handoff' ? redactContentBlocks(rawOutput) : rawOutput,
       llmStreamCall: true,
       provider: target.provider,
       model: target.model,
@@ -365,16 +362,25 @@ export class BetterCompactEngine extends BasicCompactionEngine {
     const attempt = handoffBySession.get(agent.session.id) ?? null
     handoffBySession.delete(agent.session.id)
     if (continuedCompactions.has(result.compactionId)) return
+    const record = (status, blockers) =>
+      recordContinuationOutcome(agent.session.id, {
+        compactionId: result.compactionId,
+        status,
+        blockers,
+      })
     if (signal !== undefined && signal.aborted) {
+      record('skipped', ['the manual compaction request was cancelled'])
       this.ctx.logger.info('better-compact: handoff continuation skipped because the request was cancelled')
       return
     }
     if (this.ctx.get('agents')?.get(agent.id) !== agent) {
+      record('skipped', ['the agent is no longer live'])
       this.ctx.logger.warn('better-compact: handoff continuation skipped because the agent is no longer live')
       return
     }
     const { blockers } = handoffContinuationBlockers(this.ctx, agent)
     if (blockers.length > 0) {
+      record('skipped', blockers)
       this.ctx.logger.info(`better-compact: handoff continuation not scheduled (${blockers.join('; ')}); the handoff checkpoint and file remain available`)
       return
     }
@@ -389,7 +395,9 @@ export class BetterCompactEngine extends BasicCompactionEngine {
       while (continuedCompactions.size > 200) {
         continuedCompactions.delete(continuedCompactions.values().next().value)
       }
+      record('scheduled', [])
     } catch (error) {
+      record('skipped', [`could not queue the continuation: ${errorChain(error)}`])
       this.ctx.logger.warn(`better-compact: could not queue the handoff continuation: ${errorChain(error)}`)
       return
     }

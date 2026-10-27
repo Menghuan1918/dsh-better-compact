@@ -14,8 +14,14 @@
  */
 
 import { Session } from '@deepseek-ai/dsh-session'
-import { estimateMessage, estimateToolsTokens } from '@deepseek-ai/dsh-token-meter/estimate'
+import {
+  ROLE_OVERHEAD,
+  estimateContent,
+  estimateMessage,
+  estimateToolsTokens,
+} from '@deepseek-ai/dsh-token-meter/estimate'
 import { configEquals } from './config.js'
+import { isBetterCompactEngine, serviceIdentity } from './identity.js'
 import {
   fixedPrefixTokens,
   measurementKind,
@@ -25,10 +31,25 @@ import {
   targetFromHeader,
 } from './budget.js'
 import { detectSummaryMode } from './prompts.js'
-import { isSummaryActive, lastCompactionFailure } from './live.js'
+import { continuationOutcome, isSummaryActive, lastCompactionFailure } from './live.js'
 
 /** Exact inspect route pathname. */
 export const INSPECT_PATH = '/better-compact/api/inspect'
+
+/**
+ * Native checkpoint framing reproduced only to price the replacement upper
+ * bound: the preamble + `<compacted-summary>` tags wrap every native summary
+ * message. Adapted from DeepSeek Harness (MIT; see `third-party/NOTICE`).
+ */
+const NATIVE_CHECKPOINT_PREAMBLE =
+  'This is an automatically generated checkpoint condensing an earlier span of the conversation to free up context. Treat the captured context as established background and build on it without restating it. Continue the task directly from the messages that follow, without acknowledging this checkpoint.'
+
+/** Fixed replacement framing tokens included in the preview upper bound. */
+export const NATIVE_CHECKPOINT_FRAMING_TOKENS =
+  estimateContent([
+    { type: 'text', text: `${NATIVE_CHECKPOINT_PREAMBLE}\n\n<compacted-summary>` },
+    { type: 'text', text: '</compacted-summary>' },
+  ]) + ROLE_OVERHEAD
 
 /** Structured failure the HTTP layer maps to a status. */
 export class InspectError extends Error {
@@ -60,9 +81,70 @@ function emptyPayload(activeConfig, requiresReload, sessionId = null) {
     activeConfig,
     requiresReload,
     sessionId,
+    engine: null,
     budget: null,
     preview: null,
     lastCompaction: null,
+    handoffContinuation: null,
+  }
+}
+
+/**
+ * Determine which compaction engine actually serves a session, so inspect
+ * never presents better-compact's configuration/budget for a session running
+ * another preset's native engine.
+ *
+ * @returns {{owner: 'host'|'better-compact-preset'|'foreign-preset'|'unknown', inspectApplies: boolean, reason: string|null}}
+ */
+function engineOwnership(ctx, resolved) {
+  if (resolved.agent === undefined) {
+    return {
+      owner: 'unknown',
+      inspectApplies: true,
+      reason: resolved.session === null
+        ? 'no live agent or replayable session is available; engine ownership cannot be proven'
+        : 'the session is not live; engine ownership cannot be proven, so budget/preview use the active configuration',
+    }
+  }
+  let presets
+  try {
+    presets = ctx.get('agentPresets')
+  } catch {
+    presets = undefined
+  }
+  let mounted
+  if (presets !== undefined && typeof presets.serviceFor === 'function') {
+    try {
+      mounted = presets.serviceFor(resolved.agent, 'compaction')
+    } catch {
+      mounted = undefined
+    }
+  }
+  if (mounted !== undefined) {
+    if (isBetterCompactEngine(mounted)) {
+      return { owner: 'better-compact-preset', inspectApplies: true, reason: null }
+    }
+    return {
+      owner: 'foreign-preset',
+      inspectApplies: false,
+      reason:
+        'the session preset owns a different compaction engine (' +
+        `${serviceIdentity(mounted)?.constructor?.name ?? 'unknown'}); better-compact configuration and budget preview do not apply to it`,
+    }
+  }
+  let hostEngine
+  try {
+    hostEngine = ctx.get('compaction')
+  } catch {
+    hostEngine = undefined
+  }
+  if (hostEngine !== undefined && isBetterCompactEngine(hostEngine)) {
+    return { owner: 'host', inspectApplies: true, reason: null }
+  }
+  return {
+    owner: 'unknown',
+    inspectApplies: true,
+    reason: 'no better-compact engine is mounted for this session; budget/preview use the active plugin configuration',
   }
 }
 
@@ -141,11 +223,12 @@ export function projectLastCompaction(events, sessionId, options = {}) {
   const end = ends.get(id)
   const replacement = replacements.get(id)
   const observedFailure = lastCompactionFailure(sessionId)
+  const failureMatches = observedFailure?.compactionId === id
 
   let status
   if (end === undefined) {
     status = isSummaryActive(sessionId, id) ? 'running' : 'failed'
-  } else if (observedFailure?.compactionId === id && observedFailure.status === 'persistence-error') {
+  } else if (failureMatches && observedFailure.status === 'persistence-error') {
     status = 'persistence-error'
   } else if (end.data.error !== undefined) {
     status = /abort|cancel/i.test(end.data.error) ? 'cancelled' : 'failed'
@@ -156,7 +239,7 @@ export function projectLastCompaction(events, sessionId, options = {}) {
   const mode = summary === undefined ? null : detectSummaryMode(summaryText(summary.data.summary))
   const error =
     end?.data.error ??
-    (status === 'persistence-error' ? observedFailure?.message : undefined) ??
+    (failureMatches && status !== 'completed' ? observedFailure.message : undefined) ??
     null
 
   return {
@@ -278,7 +361,8 @@ export function buildBudgetPreview(input) {
       tailTokens += measurement.nodes[index].tokens
     }
   }
-  const afterUpperBoundTokens = (budget.fixedTokens ?? 0) + tailTokens + spec.maxTokens
+  const afterUpperBoundTokens =
+    (budget.fixedTokens ?? 0) + tailTokens + spec.maxTokens + NATIVE_CHECKPOINT_FRAMING_TOKENS
   const belowTrigger =
     measurement.totalTokens >= spec.thresholdTokens
       ? null
@@ -396,6 +480,20 @@ export async function inspectPlugin(ctx, companion, sessionId = null) {
   const resolved = await resolveSession(ctx, sessionId)
   const events = resolved.events
   const lastCompaction = projectLastCompaction(events, sessionId)
+  const engine = engineOwnership(ctx, resolved)
+  const handoffContinuation = continuationOutcome(sessionId)
+  if (!engine.inspectApplies) {
+    return {
+      activeConfig,
+      requiresReload,
+      sessionId,
+      engine,
+      budget: null,
+      preview: null,
+      lastCompaction,
+      handoffContinuation,
+    }
+  }
   const tokenMeter = service(ctx, 'tokenMeter')
   let measurement
   let measurementFailure
@@ -440,8 +538,10 @@ export async function inspectPlugin(ctx, companion, sessionId = null) {
     activeConfig,
     requiresReload,
     sessionId,
+    engine,
     budget: sections.budget,
     preview: sections.preview,
     lastCompaction,
+    handoffContinuation,
   }
 }

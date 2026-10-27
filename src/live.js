@@ -18,6 +18,8 @@
 const activeSummaries = new Map()
 /** @type {Map<string, {compactionId: string | null, status: string, message: string}>} */
 const lastFailures = new Map()
+/** @type {Map<string, {compactionId: string, status: 'scheduled'|'skipped', blockers: readonly string[], at: number}>} */
+const continuationOutcomes = new Map()
 
 /** Find the latest unmatched `compaction/start` in a session log. */
 export function findOpenCompaction(session) {
@@ -89,8 +91,24 @@ export function lastCompactionFailure(sessionId) {
   return lastFailures.get(sessionId)
 }
 
+/** Record the read-only outcome of the manual handoff continuation decision. */
+export function recordContinuationOutcome(sessionId, outcome) {
+  continuationOutcomes.set(sessionId, Object.freeze({
+    compactionId: outcome.compactionId,
+    status: outcome.status,
+    blockers: Object.freeze([...(outcome.blockers ?? [])]),
+    at: outcome.at ?? Date.now(),
+  }))
+}
+
+/** Read the latest continuation decision for one session, if this process made one. */
+export function continuationOutcome(sessionId) {
+  return continuationOutcomes.get(sessionId) ?? null
+}
+
 /** Test-only reset; keeps unit tests independent. */
 export function resetLiveRegistry() {
   activeSummaries.clear()
   lastFailures.clear()
+  continuationOutcomes.clear()
 }

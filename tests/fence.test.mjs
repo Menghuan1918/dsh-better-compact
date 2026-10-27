@@ -99,9 +99,11 @@ test('a valid plugin-state request returns exactly the documented fields', async
     'activeConfig',
     'requiresReload',
     'sessionId',
+    'engine',
     'budget',
     'preview',
     'lastCompaction',
+    'handoffContinuation',
   ])
   assert.equal(payload.sessionId, null)
   assert.equal(payload.budget, null)

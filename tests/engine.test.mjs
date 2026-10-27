@@ -5,7 +5,8 @@ import { Context } from '@deepseek-ai/cordis'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { GOAL_SECTIONS, HANDOFF_SECTIONS, HANDOFF_TITLE } from '../src/prompts.js'
 import { readConfig } from '../src/config.js'
-import { resetLiveRegistry } from '../src/live.js'
+import { continuationOutcome, resetLiveRegistry } from '../src/live.js'
+import { projectLastCompaction } from '../src/inspect.js'
 import Engine from '../src/engine.js'
 
 const text = (value) => [{ type: 'text', text: value }]
@@ -123,6 +124,50 @@ test('native mode delegates to the inherited native summarizer', async () => {
     assert.equal('reasoningEffort' in calls[0], false)
   } finally {
     BasicCompactionEngine.prototype.summarize = original
+    await dispose()
+  }
+})
+
+test('native attempts mark live summary activity so inspect can report running', async () => {
+  resetLiveRegistry()
+  let release
+  const gate = new Promise((resolve) => {
+    release = resolve
+  })
+  const llm = {
+    stream: () =>
+      (async function* () {
+        await gate
+        yield { type: 'block-start', index: 0, blockType: 'text' }
+        yield { type: 'block-end', index: 0, block: { type: 'text', text: 'native summary' } }
+        yield { type: 'finish', reason: { kind: 'stop' } }
+      })(),
+  }
+  const { engine, dispose } = await makeEngine(normalized({ mode: 'native' }), { llm })
+  try {
+    const agent = fakeAgent()
+    const start = {
+      type: 'compaction/start',
+      seq: 0,
+      time: 1,
+      data: { compactionId: 'native-open', turn: 1 },
+    }
+    agent.session = {
+      id: agent.id,
+      seq: 1,
+      eventAt: () => start,
+      requestHeader: () => ({ config: { provider: 'p', model: 'm', maxTokens: 10 }, tools: [] }),
+      toolHistory: () => ({ tools: [], updates: [] }),
+    }
+    const pending = engine.summarize({ messages: [{ role: 'system', content: text('sys') }] }, agent)
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(engine.activeSummaryFor(agent.id), 'native')
+    assert.equal(projectLastCompaction([start], agent.id).status, 'running')
+    release()
+    await pending
+    assert.equal(engine.activeSummaryFor(agent.id), null)
+    assert.equal(projectLastCompaction([start], agent.id).status, 'failed')
+  } finally {
     await dispose()
   }
 })
@@ -267,9 +312,10 @@ test('truncated and malformed enhanced output is rejected, not installed', async
 test('handoff mode writes the exact document to an owner-only temp file and embeds it', async () => {
   resetLiveRegistry()
   const directories = []
+  const secret = 'sk-abcdefghijklmnopqrstuvwx123456'
   const llm = {
     resolveModelInfo: async () => ({ provider: 'p', id: 'm', name: 'm', context: { contextWindow: 4000 } }),
-    stream: () => streamOf(handoffBody())(),
+    stream: () => streamOf(`${handoffBody()}\n- leaked key: ${secret}`)(),
   }
   const { engine, dispose } = await makeEngine(normalized({ mode: 'handoff' }), {
     llm,
@@ -280,10 +326,13 @@ test('handoff mode writes the exact document to an owner-only temp file and embe
     const result = await engine.summarize({ messages: [] }, agent)
     const document = result.summary[0].text
     assert.equal(document.startsWith(HANDOFF_TITLE), true)
+    assert.equal(document.includes(secret), false, 'summary must not leak the secret')
+    assert.equal(JSON.stringify(result.rawOutput).includes(secret), false, 'rawOutput must not leak the secret')
     const path = /Handoff file: (.+)/.exec(document)?.[1]?.trim()
     assert.ok(path, 'document must name the actual file')
     directories.push(path.replace(/\/[^/]+$/, ''))
     assert.equal(await readFile(path, 'utf8'), document)
+    assert.equal((await readFile(path, 'utf8')).includes(secret), false)
   } finally {
     for (const directory of directories) await rm(directory, { recursive: true, force: true })
     await dispose()
@@ -417,6 +466,8 @@ test('_maybeContinue schedules exactly one ordinary follow-up and respects block
   await Engine.prototype._maybeContinue.call(engineLike, agent, result, undefined)
   assert.equal(followups.length, 1)
   assert.equal(followups[0].source.kind, 'user')
+  assert.equal(continuationOutcome(agent.id).status, 'scheduled')
+  assert.deepEqual(continuationOutcome(agent.id).blockers, [])
   assert.match(followups[0].content[0].text, /Continue the same task in this session/)
   assert.equal(flushes.length, 1)
   // Replay/second attempt with the same id cannot schedule twice.
@@ -440,4 +491,6 @@ test('_maybeContinue schedules exactly one ordinary follow-up and respects block
   }
   await Engine.prototype._maybeContinue.call({ ctx: pausedCtx }, agent, { compactionId: 'c3', shadowedSeqs: [] }, undefined)
   assert.equal(followups.length, 1)
+  assert.equal(continuationOutcome(agent.id).status, 'skipped')
+  assert.match(continuationOutcome(agent.id).blockers.join('; '), /goal is paused/)
 })

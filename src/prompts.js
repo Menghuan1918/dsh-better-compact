@@ -302,6 +302,27 @@ export function redactSecrets(text) {
 }
 
 /**
+ * Redact every text-bearing content block. Used for the handoff summary body
+ * and for the raw provider output persisted on `compaction/summary`, so a
+ * secret cannot survive in the trajectory view after the visible summary was
+ * redacted.
+ *
+ * @param {readonly object[]} blocks - provider output blocks.
+ * @returns {object[]} blocks with text/reasoning/tool-call payloads redacted.
+ */
+export function redactContentBlocks(blocks) {
+  return blocks.map((block) => {
+    if (block.type === 'text' || block.type === 'reasoning') {
+      return { ...block, text: redactSecrets(block.text) }
+    }
+    if (block.type === 'tool-call') {
+      return { ...block, arguments: redactSecrets(block.arguments ?? '') }
+    }
+    return block
+  })
+}
+
+/**
  * Compose the final handoff document: our own deterministic header (with the
  * actual path and a self-containedness note), followed by the model's body
  * without a duplicate title.
