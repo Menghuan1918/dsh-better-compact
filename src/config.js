@@ -77,6 +77,14 @@ export const MODEL_POLICY_KEYS = Object.freeze([
 /** Enhanced-only keys stripped before the native engine sees the config. */
 export const ENHANCED_CONFIG_KEYS = Object.freeze(['mode', 'reasoningEffort', 'cachePriority'])
 
+/** Complete accepted top-level key set. */
+export const CONFIG_KEYS = Object.freeze([
+  ...ENHANCED_CONFIG_KEYS,
+  ...NATIVE_CONFIG_KEYS.filter((key) => key !== 'auto'),
+  'auto',
+])
+const CONFIG_KEY_SET = new Set(CONFIG_KEYS)
+
 /** Plain defaults. `maxTokens: null` means "follow headroomTokens". */
 export const DEFAULTS = Object.freeze({
   mode: 'goal',
@@ -328,6 +336,16 @@ function normalizeModelPolicies(source, thresholdRatio, globalMaxTokensExplicit,
  */
 export function readConfig(config) {
   const source = config ?? {}
+  if (typeof source !== 'object' || source === null || Array.isArray(source)) {
+    throw new TypeError('configuration must be an object')
+  }
+  for (const key of Object.keys(source)) {
+    if (!CONFIG_KEY_SET.has(key)) {
+      throw new TypeError(
+        `unknown configuration key "${key}"; supported keys: ${CONFIG_KEYS.join(', ')}`,
+      )
+    }
+  }
 
   const mode = fieldOf(source, 'mode') ?? DEFAULTS.mode
   if (!MODES.includes(mode)) {

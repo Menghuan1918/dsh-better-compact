@@ -195,10 +195,27 @@ export function renderStateBlock(state, mode) {
 }
 
 /**
+ * Names of the optional authoritative-state sections present in a state value.
+ * @param {object} state - collected state.
+ * @returns {string[]} human-readable section names.
+ */
+export function omittedStateNames(state) {
+  const names = []
+  if (Array.isArray(state?.todos) && state.todos.length > 0) names.push('todos')
+  if (Array.isArray(state?.questions) && state.questions.length > 0) names.push('pending questions')
+  if (Array.isArray(state?.jobs) && state.jobs.length > 0) names.push('running jobs')
+  if (Array.isArray(state?.children) && state.children.length > 0) names.push('running child agents')
+  return names
+}
+
+/**
  * Assemble the final instruction used as the last user message.
  * @param {'goal' | 'handoff'} mode - enhanced mode.
  * @param {{text: string, trimmed: boolean, omitted: readonly string[]}} stateBlock - state block.
- * @param {{stateOmitted?: boolean}} [options] - whether the whole block was dropped.
+ * @param {object} [options] - budget fallback disclosure.
+ * @param {boolean} [options.stateOmitted] - whether the whole block was dropped.
+ * @param {readonly string[]} [options.omittedState] - optional state sections dropped to fit.
+ * @param {readonly string[]} [options.keptState] - sections that were still included.
  * @returns {string} instruction text.
  */
 export function buildInstruction(mode, stateBlock, options = {}) {
@@ -207,10 +224,19 @@ export function buildInstruction(mode, stateBlock, options = {}) {
   const notes = []
   if (options.stateOmitted === true) {
     notes.push(
-      'Authoritative state was omitted because the summary request does not fit the selected model context budget. Preserve the goal/next-action facts visible in the conversation and do not invent state.',
+      `Authoritative state was omitted because the summary request does not fit the selected model context budget${options.omittedState?.length ? ` (${options.omittedState.join(', ')})` : ''}. Preserve the goal/next-action facts visible in the conversation and do not invent state.`,
     )
-  } else if (stateBlock.trimmed) {
-    notes.push(`Some authoritative state was omitted to fit the model budget (${stateBlock.omitted.join('; ')}). Preserve the goal and next actions; do not invent the omitted items.`)
+  } else if (options.omittedState !== undefined && options.omittedState.length > 0) {
+    const keptList = options.keptState?.length ? options.keptState : ['the goal']
+    const kept = keptList.join(', ')
+    notes.push(
+      `Budget note: only ${kept} ${keptList.length === 1 ? 'was' : 'were'} included; ${options.omittedState.join(', ')} were omitted to fit the selected summary model's context budget. Keep the omitted facts that are still visible in the conversation and do not invent the rest.`,
+    )
+  }
+  if (stateBlock.trimmed) {
+    notes.push(
+      `Some authoritative state was capped to fit the model budget (${stateBlock.omitted.join('; ')}). Preserve the goal and next actions; do not invent the omitted items.`,
+    )
   }
   return [
     directive,

@@ -135,8 +135,11 @@ The unresolved checks are enforced at load/reload and by the future S3 form:
 mutually exclusive retention forms, an empty/non-empty summarization pair,
 `retainRatio < thresholdRatio`, positive output caps, duplicate/unknown model
 policies, zero headroom without an explicit `maxTokens`, and positive integer
-counts. Invalid saved values fail the row reload with an actionable message
-instead of silently coercing.
+counts. Unknown **top-level** keys and unknown keys inside a `modelPolicies`
+entry are rejected at load with the offending key and the supported key list, so
+a typo in the manual `cordis.patch.yml` path cannot be silently ignored.
+Invalid saved values fail the row reload with an actionable message instead of
+silently coercing.
 
 ### Apply-on-reload
 
@@ -177,8 +180,11 @@ The summary request is bounded by the actual selected model route:
   introduced;
 - the auxiliary request is priced with the same fixed estimator
   (`estimateMessage` / `estimateToolsTokens`);
-- if the full authoritative state does not fit, the state is reduced (full →
-  goal-only → omitted) and a budget note is added to the instruction;
+- if the full authoritative state does not fit, the state is reduced in a fixed
+  order — drop the usually-large todo list first while keeping pending
+  questions/jobs/running children, then goal-only, then no state — and the
+  instruction carries an explicit `## Budget note` naming exactly what was
+  omitted. The omission is also exposed in inspect `diagnostics`;
 - if even the state-free request cannot fit, the attempt fails with
   `BETTER_COMPACT_BUDGET` and an actionable message (compact a smaller span,
   lower `maxTokens`, or choose a larger model). The plugin never silently
@@ -269,7 +275,8 @@ it cannot recognize every credential format.
 | Automatic pressure summary fails before replacement | Warning; the latest durable surface is kept (pruning or an earlier replacement may already have landed) and the turn continues. A later turn may compact successfully. |
 | Manual summary fails | The native command reports a `ManualCompactionError`-based error (`could not produce a useful summary`); the attempt is recorded; no checkpoint is installed. |
 | Provider-confirmed context overflow | Native bounded recovery (`maxOverflowRetries`); on failure the real request error is preserved. |
-| Replacement appended, durability flush fails | Native `ManualCompactionError('persistence')`: history may have changed but saving failed; no rollback is claimed. |
+| Replacement appended, durability flush fails | Native `ManualCompactionError('persistence')`: history may have changed but saving failed; no rollback is claimed. `lastCompaction.status` is `persistence-error` when this process observed it. |
+| `compaction/end` cannot be appended | Native commit-stage failure: the summary/replacement may already be durable while the bracket stays open; the command reports “did not finish cleanly”. Inspect reports `failed` with the recorded error; no rollback or fake `completed` is claimed. |
 | Cancellation / pending user / paused goal | Summarization or continuation stops; no goal is revived; no question is answered for the user. |
 | No safe useful range | Native no-op/`null` with a reason; no fake checkpoint. |
 | Invalid model/effort/capacity | Actionable error; never a silent native or model fallback. |
@@ -303,6 +310,7 @@ Response fields (unknown values are `null`, never `0`):
 | `activeConfig` | The frozen configuration this engine instance holds. No credentials. |
 | `requiresReload` | Saved value differs from `activeConfig` (including a saved value that no longer normalizes). |
 | `sessionId` | Echo of the requested session, or `null` without one. |
+| `diagnostics` | Always an array of read-only strings for S3. It carries token-meter/model-info failures, budget-capacity reasons, last-summary budget omissions, and the engine-applicability reason (empty when everything is available). |
 | `engine` | `null` without a session, else `{owner, inspectApplies, reason}`. `owner` is `host`, `better-compact-preset`, `foreign-preset`, or `unknown`. A **foreign preset** (the shipped Web `standard` preset, for example) runs its own native engine, so `inspectApplies: false`, `budget`/`preview` are `null`, and `lastCompaction` is still projected from that session's real events. A cold/non-live session cannot prove ownership and is reported `unknown` with the active configuration. |
 | `budget` | `null` without a session, else `{contextWindow, currentTokens, measurement, fixedTokens, thresholdTokens, retainTokens, summaryMaxTokens}`. `measurement` is `measured` (provider-usage anchor), `estimated` (fixed heuristic), or `unavailable`. |
 | `preview` | `null` without a usable session, else `{beforeTokens, afterUpperBoundTokens, rangeStart, rangeEnd, reason}`. `rangeStart`/`rangeEnd` are native surface seqs from the automatic-pressure safe-cut rule; `afterUpperBoundTokens` includes the summary output budget and is an upper-bound estimate, not a prediction. `reason` explains below-trigger/no-range/unavailable. |
@@ -374,13 +382,16 @@ Verified in this repository (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)):
   automatic pressure, manual `/compact`, native event sequence, authenticated
   inspect over HTTP (401/400/404/405/no-store), failure/recovery, handoff file
   + redacted raw output + one continuation + replay after file deletion, a real
-  standard-preset foreign-engine session, persistence/flush failure,
-  in-flight cancellation, commit-stage append failure, pending-question/job/
-  child continuation gates, preset isolation/no double-compaction, and save →
-  reload → `activeConfig` update. Run the exact commands for the current test
-  counts.
+  standard-preset foreign-engine session, injected durability-flush failure
+  (`session/flush` listener; the real JSONL writer still runs), in-flight
+  cancellation, commit-stage append failure, pending-question/job/child
+  continuation gates, preset isolation/no double-compaction, and save →
+  reload → `activeConfig` update. Manual handoff continuation is exercised on
+  the host-plane engine; the preset engine's automatic path is covered, and the
+  preset manual path shares the same engine code. Run the exact commands for the
+  current test counts.
 
-The current build was verified with **84 unit/component tests** and **44
+The current build was verified with **88 unit/component tests** and **44
 real-profile smoke checks** at commit time; always prefer the fresh command
 output over these numbers.
 

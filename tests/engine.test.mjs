@@ -5,7 +5,7 @@ import { Context } from '@deepseek-ai/cordis'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { GOAL_SECTIONS, HANDOFF_SECTIONS, HANDOFF_TITLE } from '../src/prompts.js'
 import { readConfig } from '../src/config.js'
-import { continuationOutcome, resetLiveRegistry } from '../src/live.js'
+import { continuationOutcome, lastBudgetFallback, resetLiveRegistry } from '../src/live.js'
 import { projectLastCompaction } from '../src/inspect.js'
 import Engine from '../src/engine.js'
 
@@ -339,27 +339,82 @@ test('handoff mode writes the exact document to an owner-only temp file and embe
   }
 })
 
-test('_chooseInstruction keeps the goal when optional state does not fit and fails loud', () => {
-  const engineLike = {
+function budgetEngineLike() {
+  return {
     mode: 'goal',
     snapshot: { cachePriority: false },
     _estimateRequest: Engine.prototype._estimateRequest,
+    ctx: { logger: { warn: () => undefined } },
   }
+}
+
+test('_chooseInstruction drops todos first, discloses it, and keeps pending work', () => {
+  resetLiveRegistry()
+  const engineLike = budgetEngineLike()
   const input = { messages: [{ role: 'system', content: text('x'.repeat(400)) }] }
   const state = {
     goal: { objective: 'goal', phase: 'active', roundsStarted: 1, maxGoalRounds: 2 },
     todos: Array.from({ length: 40 }, (_, index) => ({ content: 't'.repeat(200), status: 'pending' })),
-    questions: [],
-    jobs: [],
-    children: [],
+    questions: [{ callId: 'q-1', state: 'continued', questions: [{ id: 'q', question: 'Which provider?' }] }],
+    jobs: [{ id: 'job-1', kind: 'bash', label: 'still running', status: 'running' }],
+    children: [{ id: 'child-1', depth: 1 }],
   }
-  const info = { provider: 'p', id: 'm', name: 'm', context: { contextWindow: 1000 } }
-  const chosen = Engine.prototype._chooseInstruction.call(engineLike, input, state, info, 100)
+  const info = { provider: 'p', id: 'm', name: 'm', context: { contextWindow: 1100 } }
+  const chosen = Engine.prototype._chooseInstruction.call(
+    engineLike,
+    input,
+    state,
+    info,
+    100,
+    'budget-fallback-session',
+  )
   assert.match(chosen, /## Current Goal and Unresolved Requests/)
   assert.equal(chosen.includes('Todos (authoritative'), false)
+  assert.match(
+    chosen,
+    /Budget note: only the goal, pending questions, running jobs, running child agents were included; todos were omitted to fit/,
+  )
+  assert.match(chosen, /Which provider\?/)
+  assert.match(chosen, /job-1/)
+  assert.match(chosen, /child-1/)
+  assert.deepEqual(lastBudgetFallback('budget-fallback-session').omitted, ['todos'])
+
+  // When pending facts also do not fit, the instruction says everything that
+  // was dropped instead of silently losing them.
+  const bigState = {
+    ...state,
+    questions: [{
+      callId: 'q-2',
+      state: 'continued',
+      questions: [{ id: 'q', question: 'q'.repeat(4000) }],
+    }],
+  }
+  const goalOnly = Engine.prototype._chooseInstruction.call(
+    engineLike,
+    input,
+    bigState,
+    { ...info, context: { contextWindow: 1000 } },
+    100,
+    'budget-fallback-session',
+  )
+  assert.match(goalOnly, /only the goal was included; todos, pending questions, running jobs, running child agents were omitted/)
+  assert.deepEqual(lastBudgetFallback('budget-fallback-session').omitted, [
+    'todos',
+    'pending questions',
+    'running jobs',
+    'running child agents',
+  ])
+
   assert.throws(
     () =>
-      Engine.prototype._chooseInstruction.call(engineLike, input, state, { ...info, context: { contextWindow: 200 } }, 100),
+      Engine.prototype._chooseInstruction.call(
+        engineLike,
+        input,
+        state,
+        { ...info, context: { contextWindow: 200 } },
+        100,
+        'budget-fallback-session',
+      ),
     (error) => error.code === 'BETTER_COMPACT_BUDGET',
   )
 })

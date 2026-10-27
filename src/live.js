@@ -20,6 +20,8 @@ const activeSummaries = new Map()
 const lastFailures = new Map()
 /** @type {Map<string, {compactionId: string, status: 'scheduled'|'skipped', blockers: readonly string[], at: number}>} */
 const continuationOutcomes = new Map()
+/** @type {Map<string, {omitted: readonly string[], at: number}>} */
+const budgetFallbacks = new Map()
 
 /** Find the latest unmatched `compaction/start` in a session log. */
 export function findOpenCompaction(session) {
@@ -106,9 +108,23 @@ export function continuationOutcome(sessionId) {
   return continuationOutcomes.get(sessionId) ?? null
 }
 
+/** Record authoritative state omitted from the most recent enhanced summary. */
+export function recordBudgetFallback(sessionId, omitted) {
+  budgetFallbacks.set(sessionId, Object.freeze({
+    omitted: Object.freeze([...omitted]),
+    at: Date.now(),
+  }))
+}
+
+/** Read the latest summary-budget omission for one session. */
+export function lastBudgetFallback(sessionId) {
+  return budgetFallbacks.get(sessionId) ?? null
+}
+
 /** Test-only reset; keeps unit tests independent. */
 export function resetLiveRegistry() {
   activeSummaries.clear()
   lastFailures.clear()
   continuationOutcomes.clear()
+  budgetFallbacks.clear()
 }

@@ -131,6 +131,23 @@ test('the Config schema rejects exclusive ratio boundaries before readConfig run
   assert.equal(parsed.thresholdRatio.get(), 0.8)
 })
 
+test('unknown top-level and policy keys are rejected with actionable messages', () => {
+  assert.throws(
+    () => readConfig({ ...rawDefaults(), bogus: true }),
+    /unknown configuration key "bogus"; supported keys:/,
+  )
+  // The Loader's schema output preserves unknown keys; load-time validation
+  // must reject them instead of silently dropping a manual-patch typo.
+  const parsed = Config({ mode: 'goal', bogus: true })
+  assert.throws(() => readConfig(parsed), /unknown configuration key "bogus"/)
+  assert.throws(
+    () => readConfig({ ...rawDefaults(), modelPolicies: [{ provider: 'p', model: 'm', bogus: true }] }),
+    /modelPolicies\[0\]: unknown key "bogus"/,
+  )
+  const parsedPolicy = Config({ modelPolicies: [{ provider: 'p', model: 'm', bogus: true }] })
+  assert.throws(() => readConfig(parsedPolicy), /modelPolicies\[0\]: unknown key "bogus"/)
+})
+
 test('readConfig rejects conflicting or invalid settings', () => {
   const cases = [
     () => readConfig({ ...rawDefaults(), retainRatio: 0.2, retainTokens: 100 }),

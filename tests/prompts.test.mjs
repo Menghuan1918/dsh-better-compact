@@ -90,6 +90,39 @@ test('buildInstruction appends authoritative state at the end and notes omission
   assert.match(omitted, /Authoritative state was omitted because the summary request does not fit/)
 })
 
+test('buildInstruction discloses budget fallbacks and keeps the surviving facts', () => {
+  const state = {
+    goal: { objective: 'Keep the goal', phase: 'active', roundsStarted: 1, maxGoalRounds: 3 },
+    todos: [{ content: 'large todo', status: 'pending' }],
+    questions: [{ callId: 'q-1', state: 'continued', questions: [{ id: 'q', question: 'Which provider?' }] }],
+    jobs: [{ id: 'job-1', kind: 'bash', label: 'still running', status: 'running' }],
+    children: [{ id: 'child-1', depth: 1 }],
+  }
+  const withoutTodos = renderStateBlock({ ...state, todos: [] }, 'goal')
+  const text = buildInstruction('goal', withoutTodos, {
+    omittedState: ['todos'],
+    keptState: ['the goal', 'pending questions', 'running jobs', 'running child agents'],
+  })
+  assert.match(
+    text,
+    /Budget note: only the goal, pending questions, running jobs, running child agents were included; todos were omitted to fit/,
+  )
+  assert.match(text, /Which provider\?/)
+  assert.match(text, /job-1/)
+  assert.match(text, /child-1/)
+  assert.equal(text.includes('large todo'), false)
+
+  const stateOmitted = buildInstruction(
+    'goal',
+    { text: '', trimmed: false, omitted: [] },
+    { stateOmitted: true, omittedState: ['todos', 'pending questions'] },
+  )
+  assert.match(
+    stateOmitted,
+    /Authoritative state was omitted because the summary request does not fit .*\(todos, pending questions\)/,
+  )
+})
+
 test('assertSummaryStructure is fail-closed but does not invent facts', () => {
   assert.doesNotThrow(() => assertSummaryStructure(validGoal, 'goal'))
   assert.doesNotThrow(() => assertSummaryStructure(validHandoff, 'handoff'))

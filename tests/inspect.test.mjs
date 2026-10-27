@@ -11,6 +11,7 @@ import {
 import {
   markSummaryEnd,
   markSummaryStart,
+  recordBudgetFallback,
   recordCompactionFailure,
   recordContinuationOutcome,
   resetLiveRegistry,
@@ -344,6 +345,7 @@ test('inspectPlugin without a session returns only plugin state', async () => {
     requiresReload: false,
     sessionId: null,
     engine: null,
+    diagnostics: [],
     budget: null,
     preview: null,
     lastCompaction: null,
@@ -437,6 +439,7 @@ test('inspectPlugin inspects a live session and never calls the LLM or mutates i
   assert.equal(payload.engine.owner, 'unknown')
   assert.equal(payload.engine.inspectApplies, true)
   assert.equal(payload.handoffContinuation, null)
+  assert.ok(Array.isArray(payload.diagnostics))
 })
 
 test('inspectPlugin maps unknown, invisible and unavailable sessions', async () => {
@@ -514,6 +517,7 @@ test('inspectPlugin reads a cold session through observeSession and reports unkn
   assert.match(payload.preview.reason, /no routed request/)
   assert.equal(payload.engine.owner, 'unknown')
   assert.equal(payload.handoffContinuation, null)
+  assert.ok(payload.diagnostics.some((entry) => /engine ownership cannot be proven/.test(entry)))
 })
 
 test('inspect flags a foreign preset engine and keeps only real-event lastCompaction', async () => {
@@ -554,6 +558,7 @@ test('inspect flags a foreign preset engine and keeps only real-event lastCompac
   assert.equal(payload.engine.owner, 'foreign-preset')
   assert.equal(payload.engine.inspectApplies, false)
   assert.match(payload.engine.reason, /different compaction engine/)
+  assert.deepEqual(payload.diagnostics, [payload.engine.reason])
   assert.equal(payload.budget, null)
   assert.equal(payload.preview, null)
   assert.equal(payload.lastCompaction.id, 'foreign-1')
@@ -586,6 +591,52 @@ test('inspect applies to a session on the better-compact preset engine', async (
   assert.equal(payload.engine.owner, 'better-compact-preset')
   assert.equal(payload.engine.inspectApplies, true)
   assert.equal(payload.budget.contextWindow, 1000)
+  assert.ok(Array.isArray(payload.diagnostics))
+})
+
+test('inspect reports token-meter failure as unavailable plus a diagnostic', async () => {
+  resetLiveRegistry()
+  const events = [
+    event('request/header', { header: { config: { provider: 'p', model: 'm' } }, reason: 'initial' }, 0),
+    event('user/message', { role: 'user', id: 'u', content: text('a'), source: { kind: 'user' } }, 1),
+  ]
+  const session = fakeSession(events, { config: { provider: 'p', model: 'm' } })
+  const agent = { id: 'session-1', session, ctx: {} }
+  const ctx = {
+    get: (name) => {
+      if (name === 'agents') return { get: () => agent }
+      if (name === 'tokenMeter') {
+        return {
+          measure: () => {
+            throw new Error('meter replay failed')
+          },
+        }
+      }
+      if (name === 'llm') return { resolveModelInfo: async () => ({ provider: 'p', id: 'm', name: 'm', context: { contextWindow: 1000 } }) }
+      return undefined
+    },
+  }
+  const payload = await inspectPlugin(ctx, companionFor(normalized()), 'session-1')
+  assert.equal(payload.budget.measurement, 'unavailable')
+  assert.equal(payload.budget.currentTokens, null)
+  assert.equal(payload.preview, null)
+  assert.ok(payload.diagnostics.some((entry) => /token measurement is unavailable/.test(entry)))
+  assert.ok(payload.diagnostics.some((entry) => /meter replay failed/.test(entry)))
+})
+
+test('inspect exposes the last summary budget omission as a diagnostic', async () => {
+  resetLiveRegistry()
+  recordBudgetFallback('session-1', ['todos', 'pending questions'])
+  const ctx = {
+    get: (name) => {
+      if (name === 'agents') return { get: () => ({ id: 'session-1', session: fakeSession([]) }) }
+      return undefined
+    },
+  }
+  const payload = await inspectPlugin(ctx, companionFor(normalized()), 'session-1')
+  assert.ok(
+    payload.diagnostics.some((entry) => /omitted authoritative state .*todos; pending questions/.test(entry)),
+  )
 })
 
 test('inspect exposes the latest handoff continuation decision', async () => {

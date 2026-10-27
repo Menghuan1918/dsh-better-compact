@@ -31,7 +31,12 @@ import {
   targetFromHeader,
 } from './budget.js'
 import { detectSummaryMode } from './prompts.js'
-import { continuationOutcome, isSummaryActive, lastCompactionFailure } from './live.js'
+import {
+  continuationOutcome,
+  isSummaryActive,
+  lastBudgetFallback,
+  lastCompactionFailure,
+} from './live.js'
 
 /** Exact inspect route pathname. */
 export const INSPECT_PATH = '/better-compact/api/inspect'
@@ -82,6 +87,7 @@ function emptyPayload(activeConfig, requiresReload, sessionId = null) {
     requiresReload,
     sessionId,
     engine: null,
+    diagnostics: [],
     budget: null,
     preview: null,
     lastCompaction: null,
@@ -286,9 +292,9 @@ export function buildBudgetPreview(input) {
       spec = resolveCompactSpec(policy, contextWindow, reserved)
     } catch (error) {
       budgetReason = error instanceof Error ? error.message : String(error)
-      diagnostics.push(budgetReason)
     }
   }
+  if (budgetReason !== undefined) diagnostics.push(budgetReason)
 
   const budget = {
     contextWindow,
@@ -309,7 +315,7 @@ export function buildBudgetPreview(input) {
       preview: null,
       diagnostics: [
         ...diagnostics,
-        measurement === undefined ? 'token measurement is unavailable for this session' : 'session surface is unavailable',
+        measurement === undefined ? 'token measurement is unavailable for this session' : 'session surface is unavailable; token measurement could not be projected',
       ],
     }
   }
@@ -325,6 +331,7 @@ export function buildBudgetPreview(input) {
   }
 
   if (budgetReason !== undefined || selectionError !== undefined) {
+    if (selectionError !== undefined) diagnostics.push(selectionError)
     return {
       budget,
       preview: {
@@ -488,6 +495,7 @@ export async function inspectPlugin(ctx, companion, sessionId = null) {
       requiresReload,
       sessionId,
       engine,
+      diagnostics: [engine.reason].filter((value) => value !== null),
       budget: null,
       preview: null,
       lastCompaction,
@@ -530,15 +538,22 @@ export async function inspectPlugin(ctx, companion, sessionId = null) {
     modelInfo: info,
     modelInfoError,
   })
-  if (measurementFailure !== undefined) {
-    sections.diagnostics.push(measurementFailure)
+  const diagnostics = [...sections.diagnostics]
+  if (measurementFailure !== undefined) diagnostics.push(measurementFailure)
+  const fallback = lastBudgetFallback(sessionId)
+  if (fallback !== null) {
+    diagnostics.push(
+      `the last enhanced summary omitted authoritative state to fit the model budget: ${fallback.omitted.join('; ')}`,
+    )
   }
+  if (engine.reason !== null) diagnostics.push(engine.reason)
 
   return {
     activeConfig,
     requiresReload,
     sessionId,
     engine,
+    diagnostics: [...new Set(diagnostics.filter((entry) => typeof entry === 'string' && entry.length > 0))],
     budget: sections.budget,
     preview: sections.preview,
     lastCompaction,

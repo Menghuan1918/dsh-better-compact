@@ -140,6 +140,7 @@ test('a valid plugin-state request returns exactly the documented fields', async
     'requiresReload',
     'sessionId',
     'engine',
+    'diagnostics',
     'budget',
     'preview',
     'lastCompaction',

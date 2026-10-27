@@ -129,8 +129,8 @@ installed build:
 `npm test` runs `node --test` over:
 
 - `config.test.mjs` — schema defaults, volatile fields, normalization, all
-  cross-field conflicts, native-projection stripping, policy-level headroom
-  semantics, stable keys.
+  cross-field conflicts, unknown top-level/policy key rejection,
+  native-projection stripping, policy-level headroom semantics, stable keys.
 - `budget.test.mjs` — exact native threshold/retention arithmetic, per-target
   overrides, capacity/retention errors, safe-cut tail retention, tool-pairing
   boundaries, fixed-prefix pricing.
@@ -143,15 +143,17 @@ installed build:
 - `engine.test.mjs` — frozen snapshot, missing companion error, native delegation
   and native in-flight summary marking, goal state + effort + cache-shape
   request, unsupported effort, truncation / malformed-output rejection, handoff
-  file embedding and rawOutput redaction, budget trimming, route resolution,
-  supersede identity, exactly-one continuation and blockers, continuation
-  outcome recording.
+  file embedding and rawOutput redaction, ordered budget fallback (todos first,
+  then pending facts, then goal-only) with disclosure/omission recording, route
+  resolution, supersede identity, exactly-one continuation and blockers,
+  continuation outcome recording.
 - `state.test.mjs` — read-only goal/todo/question/job/child collection and every
   continuation blocker.
 - `inspect.test.mjs` — `lastCompaction` status/trigger/mode projection (including
   recorded-error surfacing on an open bracket), budget/preview math with native
   framing, null-not-zero semantics, engine ownership for host/preset/foreign/
-  cold sessions, handoff-continuation exposure, live read-only behavior, 404/503
+  cold sessions, handoff-continuation exposure, diagnostics for token-meter
+  failure and summary-budget omissions, live read-only behavior, 404/503
   mapping, cold `observeSession` path.
 - `fence.test.mjs` — 401/403 ordering, missing-fence 503, registration waiting
   for both webServer and connection, 400/405, documented response shape and
@@ -200,11 +202,16 @@ What it does:
    exactly one same-session follow-up is scheduled and visible in inspect;
    effort/cache-priority request shape; delete file + flush; paused goal blocks
    continuation but still commits the checkpoint; a real `standard` preset
-   session is reported as a foreign engine; real flush failure →
-   `persistence-error`; real in-flight abort → `cancelled`; simulated
-   `compaction/end` append failure → `failed` with the recorded error; a real
-   timed pending question, real running job, and real running child each skip
-   continuation and expose blockers; save `auto: true`.
+   session is reported as a foreign engine; an injected `session/flush`
+   listener failure at the compaction durability checkpoint →
+   `persistence-error` (the real JSONL writer still runs, so this is an
+   aggregate flush failure, not a simulated disk failure); real in-flight abort
+   → `cancelled`; simulated `compaction/end` append failure → `failed` with the
+   recorded error; a real timed pending question, real running job, and real
+   running child each skip continuation and expose blockers; save
+   `auto: true`. Manual handoff continuation is exercised on the host-plane
+   engine; the preset engine automatic path is covered separately, and the
+   preset manual path runs the same engine code.
 6. Boot 3 — handoff mode, auto on: automatic handoff compaction adds no turn;
    the `better-compact` preset provides an isolated engine and produces exactly
    one compaction (no host double-compaction); save `mode: native`.
@@ -234,6 +241,13 @@ touches the user's real profile or the running GUI.
   pressure compaction runs at that boundary, so it usually has no todo list;
   manual idle compaction sees the previous turn's list. This is host behavior,
   not a missing read path.
+- Unknown configuration keys are rejected at load, including keys inside a
+  `modelPolicies` entry. The error names the key and the supported set; a
+  manual YAML typo should fail the row, not be ignored.
+- If an enhanced summary request cannot fit all authoritative state, the
+  instruction contains a `## Budget note` and inspect `diagnostics` reports what
+  was omitted. The fallback order is: drop todos (keep pending
+  questions/jobs/children), then goal-only, then no state.
 - If enhanced summaries fail with `BETTER_COMPACT_BUDGET`, the replayed span plus
   `maxTokens` does not fit `contextWindow`; this is explicit rather than a silent
   truncation. Use a larger model, lower `maxTokens`, or compact earlier.
@@ -251,6 +265,28 @@ touches the user's real profile or the running GUI.
   `stat.mode` there). The read-back check still runs; see `handoff.test.mjs`.
 - Do not add mutating verbs to inspect; settings writes go through the host
   `settings`/configForms pipeline only.
+
+## Inspect contract notes for S3
+
+The read-only payload is the shared contract S3 renders; treat these as stable:
+
+- Keys: `activeConfig`, `requiresReload`, `sessionId`, `engine`, `diagnostics`,
+  `budget`, `preview`, `lastCompaction`, `handoffContinuation`.
+- `diagnostics` is always a `string[]` (empty when nothing is wrong). It carries
+  token-meter or model-info failures, budget-capacity reasons, the last summary's
+  budget omission (`recordBudgetFallback`), and the engine-applicability reason.
+  Render it as an informational/error list; it is not a second metric system.
+- `engine.owner`/`inspectApplies` decide whether the budget/preview sections are
+  meaningful for this session. A foreign preset session returns
+  `budget: null`/`preview: null`; do not draw a fake threshold or percentage.
+- `handoffContinuation` is process-local (`null` on a cold/restarted process) and
+  reports `scheduled` or `skipped` plus blockers for the last manual handoff.
+- Unknown values stay `null`; `measurement` distinguishes `measured` (provider
+  usage anchor), `estimated` (fixed heuristic), and `unavailable`.
+- `afterUpperBoundTokens` includes the summary output budget and
+  `NATIVE_CHECKPOINT_FRAMING_TOKENS`; keep calling it an upper-bound estimate.
+- Saving still goes through `ctx.settings`/configForms revision CAS; this API is
+  GET-only and must not gain a write verb for S3 convenience.
 
 ## Updating the DSH baseline
 

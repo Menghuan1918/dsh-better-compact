@@ -25,7 +25,10 @@ test('writeHandoffFile writes an owner-only file under the OS temp dir and reads
     assert.ok(written.path.includes(HANDOFF_DIR_PREFIX))
     const info = await stat(written.path)
     assert.equal(info.isFile(), true)
-    assert.equal(info.mode & 0o777, HANDOFF_FILE_MODE)
+    assert.equal(written.permissionPolicy, handoffPermissionPolicy())
+    if (handoffPermissionPolicy() === 'posix-0600') {
+      assert.equal(info.mode & 0o777, HANDOFF_FILE_MODE)
+    }
     const readBack = await readFile(written.path, 'utf8')
     assert.equal(readBack, written.body)
     assert.match(readBack, new RegExp(`actual path: ${written.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))

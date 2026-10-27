@@ -497,6 +497,7 @@ try {
   assert.deepEqual(Object.keys(bare.json).sort(), [
     'activeConfig',
     'budget',
+    'diagnostics',
     'engine',
     'handoffContinuation',
     'lastCompaction',
@@ -534,6 +535,7 @@ try {
   assert.equal(previewBefore.engine.owner, 'host')
   assert.equal(previewBefore.engine.inspectApplies, true)
   assert.equal(previewBefore.handoffContinuation, null)
+  assert.ok(Array.isArray(previewBefore.diagnostics))
   assert.equal(previewBefore.budget.retainTokens, 100)
   assert.equal(previewBefore.budget.contextWindow, 30000)
   assert.equal(previewBefore.budget.summaryMaxTokens, 100)

@@ -36,6 +36,7 @@ import {
   continuationText,
   redactContentBlocks,
   redactSecrets,
+  omittedStateNames,
   renderStateBlock,
 } from './prompts.js'
 import { writeHandoffFile } from './handoff.js'
@@ -45,6 +46,7 @@ import {
   lastCompactionFailure,
   markSummaryEnd,
   markSummaryStart,
+  recordBudgetFallback,
   recordCompactionFailure,
   recordContinuationOutcome,
 } from './live.js'
@@ -253,31 +255,74 @@ export class BetterCompactEngine extends BasicCompactionEngine {
   }
 
   /**
-   * Choose an instruction that fits the model context, keeping the goal state
-   * before optional todos/questions/jobs, and failing loud when even the empty
-   * state request does not fit.
+   * Choose an instruction that fits the model context. Ordering keeps compact
+   * pending work (questions/jobs/children) before the often-large todo list, so
+   * a continuation checkpoint does not silently lose "wait for this" facts.
+   * Every omission is disclosed in the instruction and recorded for inspect.
    */
-  _chooseInstruction(input, state, info, maxTokens) {
+  _chooseInstruction(input, state, info, maxTokens, sessionId) {
     const contextWindow = info.context?.contextWindow
+    const present = omittedStateNames(state)
     const full = renderStateBlock(state, this.mode)
+    const withoutTodos = present.includes('todos')
+      ? renderStateBlock({ ...state, todos: [] }, this.mode)
+      : null
     const goalOnly = renderStateBlock(
-      { goal: state.goal, ...(state.goalError === undefined ? {} : { goalError: state.goalError }) },
+      {
+        goal: state.goal,
+        ...(state.goalError === undefined ? {} : { goalError: state.goalError }),
+        todos: [],
+        questions: [],
+        jobs: [],
+        children: [],
+      },
       this.mode,
     )
+    const empty = { text: '', trimmed: false, omitted: [] }
     const candidates = [
-      { block: full, stateOmitted: false },
-      { block: goalOnly, stateOmitted: false },
-      { block: { text: '', trimmed: false, omitted: [] }, stateOmitted: true },
+      { block: full, omittedState: [], keptState: present },
+      ...(withoutTodos === null
+        ? []
+        : [{
+            block: withoutTodos,
+            omittedState: ['todos'],
+            keptState: ['the goal', ...present.filter((name) => name !== 'todos')],
+          }]),
+      { block: goalOnly, omittedState: present, keptState: ['the goal'] },
+      { block: empty, stateOmitted: true, omittedState: present, keptState: [] },
     ]
+    const seen = new Set()
+    const unique = candidates.filter((candidate) => {
+      const key = `${candidate.stateOmitted === true ? 'omitted' : 'included'}\u0000${candidate.block.text}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    const record = (candidate) => {
+      const omitted = [
+        ...new Set([...candidate.omittedState, ...(candidate.block.trimmed ? candidate.block.omitted : [])]),
+      ]
+      if (omitted.length === 0) return
+      recordBudgetFallback(sessionId, omitted)
+      this.ctx.logger.warn(
+        `better-compact: summary budget omitted authoritative state (${omitted.join('; ')}); the checkpoint instruction discloses the omission`,
+      )
+    }
     if (contextWindow === undefined) {
+      record(unique[0])
       return buildInstruction(this.mode, full)
     }
-    for (const candidate of candidates) {
+    for (const candidate of unique) {
       const instruction = buildInstruction(this.mode, candidate.block, {
-        stateOmitted: candidate.stateOmitted,
+        stateOmitted: candidate.stateOmitted === true,
+        omittedState: candidate.omittedState,
+        keptState: candidate.keptState,
       })
       const estimated = this._estimateRequest(input, instruction)
-      if (estimated + maxTokens <= contextWindow) return instruction
+      if (estimated + maxTokens <= contextWindow) {
+        record(candidate)
+        return instruction
+      }
     }
     throw new LlmError(
       `the summary request does not fit ${info.provider}/${info.id}: the replayed conversation plus maxTokens ${maxTokens} exceeds the ${contextWindow}-token context window; compact a smaller span, lower maxTokens, or choose a larger summary model`,
@@ -292,7 +337,7 @@ export class BetterCompactEngine extends BasicCompactionEngine {
     const info = await this.ctx.llm.resolveModelInfo(target.provider, target.model, signal)
     const effort = this._resolveEffort(info)
     const state = collectAuthoritativeState(this.ctx, agent)
-    const instruction = this._chooseInstruction(input, state, info, maxTokens)
+    const instruction = this._chooseInstruction(input, state, info, maxTokens, agent.session.id)
     const finalMessage = deepFreeze({
       role: 'user',
       content: [{ type: 'text', text: instruction }],
