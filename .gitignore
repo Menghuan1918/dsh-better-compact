@@ -1,0 +1,7 @@
+node_modules/
+.worktrees/
+*.tgz
+*.log
+*.jsonl
+*.bak
+.DS_Store
