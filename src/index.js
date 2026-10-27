@@ -6,9 +6,9 @@
  *      Loader) and the `betterCompactConfig` service with both the live value
  *      (`current()`) and the frozen load-time snapshot (`snapshot()`) that the
  *      engine actually holds;
- *   2. the read-only GET `/better-compact/api/inspect` route on the Host
- *      webserver, behind the Host connection trust fence when that service is
- *      present; and
+ *   2. the read-only GET `/better-compact/api/inspect` and
+ *      GET `/better-compact/api/models` routes on the Host webserver, behind
+ *      the Host connection trust fence when that service is present; and
  *   3. the browser module package entry (`./client`), mounted by the client
  *      module loader from `dsh.client` in package.json.
  *
@@ -18,6 +18,7 @@
 
 import { Config, ENTRY_ID, PACKAGE_NAME, ROW_CONFIG_KEYS, deepFreeze, readConfig } from './config.js'
 import { INSPECT_PATH, InspectError, inspectPlugin } from './inspect.js'
+import { MODELS_PATH, collectModelRoutes } from './models.js'
 
 export { Config } from './config.js'
 export {
@@ -28,6 +29,8 @@ export {
   ROW_CONFIG_KEY,
   ROW_CONFIG_KEYS,
 } from './config.js'
+export { INSPECT_PATH } from './inspect.js'
+export { MODELS_PATH } from './models.js'
 
 /** Cordis function-plugin name (also the client module identity). */
 export const name = PACKAGE_NAME
@@ -85,16 +88,17 @@ function parseQuery(req) {
 }
 
 /**
- * One inspect request. Read-only: no LLM generation, compaction, CLI, goal
- * change, or file write is performed here or in `inspectPlugin`.
+ * Apply the Host trust fence shared by every read-only route.
  *
- * Exported as a test seam for the Host-fence (401/403) and wire-validation
- * branches; production only reaches it through the registered GET route.
+ * The route is only registered when the Host webserver and `connection` fence
+ * both exist; a fence that disappears later must still fail closed. The
+ * connection service is the composition's authenticated/trusted Web boundary
+ * (Host/Origin fence + browser authentication); this plugin adds no write API,
+ * cross-origin allowance, or trust switch of its own.
+ *
+ * @returns {boolean} true when the request was rejected and a response sent.
  */
-export async function handleInspect(ctx, companion, req, res) {
-  // Host trust fence. It is the composition's authenticated/trusted Web
-  // boundary (Host/Origin fence + browser authentication); this plugin adds no
-  // write API, cross-origin allowance, or trust switch of its own.
+function rejectUntrustedRead(ctx, req, res, unavailableCode) {
   const connection = (() => {
     try {
       return ctx.get('connection')
@@ -103,14 +107,11 @@ export async function handleInspect(ctx, companion, req, res) {
     }
   })()
   if (typeof connection?.requestRejection !== 'function') {
-    // Fail closed. The route is only registered when the Host connection fence
-    // exists, and a service that disappears later must not expose unauthenticated
-    // session reads.
     sendJson(res, 503, {
-      code: 'INSPECT_UNAVAILABLE',
-      message: 'the host connection trust fence is unavailable; the inspect route is disabled',
+      code: unavailableCode,
+      message: 'the host connection trust fence is unavailable; the read-only API route is disabled',
     })
-    return
+    return true
   }
   let rejection
   try {
@@ -120,14 +121,26 @@ export async function handleInspect(ctx, companion, req, res) {
       code: 'CONNECTION_FENCE_UNAVAILABLE',
       message: `the host connection fence failed: ${error instanceof Error ? error.message : String(error)}`,
     })
-    return
+    return true
   }
   if (rejection !== undefined) {
     res.statusCode = rejection
     res.setHeader('cache-control', 'no-store')
     res.end()
-    return
+    return true
   }
+  return false
+}
+
+/**
+ * One inspect request. Read-only: no LLM generation, compaction, CLI, goal
+ * change, or file write is performed here or in `inspectPlugin`.
+ *
+ * Exported as a test seam for the Host-fence (401/403) and wire-validation
+ * branches; production only reaches it through the registered GET route.
+ */
+export async function handleInspect(ctx, companion, req, res) {
+  if (rejectUntrustedRead(ctx, req, res, 'INSPECT_UNAVAILABLE')) return
   if (req.method !== 'GET') {
     sendMethodNotAllowed(res, 'GET')
     return
@@ -148,6 +161,29 @@ export async function handleInspect(ctx, companion, req, res) {
     sendJson(res, 500, {
       code: 'INSPECT_FAILED',
       message: `inspection failed: ${error instanceof Error ? error.message : String(error)}`,
+    })
+  }
+}
+
+/**
+ * One read-only models request: the host's allowed summary-model candidates
+ * plus advertised efforts. No session, no provider I/O, no CLI, no writes.
+ *
+ * Exported as a test seam for the fence and method branches; production only
+ * reaches it through the registered GET route.
+ */
+export async function handleModels(ctx, req, res) {
+  if (rejectUntrustedRead(ctx, req, res, 'MODELS_UNAVAILABLE')) return
+  if (req.method !== 'GET') {
+    sendMethodNotAllowed(res, 'GET')
+    return
+  }
+  try {
+    sendJson(res, 200, await collectModelRoutes(ctx))
+  } catch (error) {
+    sendJson(res, 500, {
+      code: 'MODELS_FAILED',
+      message: `model route projection failed: ${error instanceof Error ? error.message : String(error)}`,
     })
   }
 }
@@ -185,12 +221,12 @@ export function apply(ctx, config = {}) {
   })
 
   // Optional Web surface: headless compositions have no webserver and no
-  // connection fence, so the inspect route is simply not registered. Waiting
-  // for both services makes "no connection" fail closed instead of exposing an
-  // unauthenticated read route.
+  // connection fence, so the read-only routes are simply not registered.
+  // Waiting for both services makes "no connection" fail closed instead of
+  // exposing an unauthenticated read route.
   ctx.inject(['webServer', 'connection'], (inner) => {
     if (typeof inner.connection?.requestRejection !== 'function') {
-      inner.logger?.warn?.('dsh-better-compact: inspect route disabled because the Host connection fence is unavailable')
+      inner.logger?.warn?.('dsh-better-compact: read-only API routes disabled because the Host connection fence is unavailable')
       return
     }
     inner.effect(
@@ -201,6 +237,15 @@ export function apply(ctx, config = {}) {
           handler: (req, res) => handleInspect(inner, companion, req, res),
         }),
       `dsh-better-compact: GET ${INSPECT_PATH}`,
+    )
+    inner.effect(
+      () =>
+        inner.webServer.register({
+          kind: 'exact',
+          path: MODELS_PATH,
+          handler: (req, res) => handleModels(inner, req, res),
+        }),
+      `dsh-better-compact: GET ${MODELS_PATH}`,
     )
   })
 }
