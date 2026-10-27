@@ -31,7 +31,8 @@ commits, docs, or the npm package.
 | [src/prompts.js](../src/prompts.js) | Goal/handoff instructions, authoritative-state rendering, output structure check, mode detection, conservative redaction, handoff document/continuation text. |
 | [src/state.js](../src/state.js) | Read-only goal/todo/question/job/child collection and continuation blockers. |
 | [src/handoff.js](../src/handoff.js) | Per-attempt temp directory/path, owner-only write, permission stat, byte-for-byte read-back. |
-| [src/live.js](../src/live.js) | Process-local "summary in flight" and classified-failure observations for inspect only; no durable claim. |
+| [src/live.js](../src/live.js) | Process-local "summary in flight", classified-failure, and handoff-continuation outcome observations for inspect only; no durable claim. |
+| [src/identity.js](../src/identity.js) | Unwraps cordis service proxies (`symbols.original`) so preset-owned engines can be compared and recognized. |
 | [src/inspect.js](../src/inspect.js) | Live/cold session inspection, budget/preview construction, `lastCompaction` projection, inspect error taxonomy. |
 | [src/client.js](../src/client.js) | Zero-build browser closure; registers the stable row-config keys. |
 | [scripts/runtime-smoke.mjs](../scripts/runtime-smoke.mjs) | Four-boot real-profile smoke with a temp DSH home and scripted adapter. |
@@ -90,16 +91,35 @@ installed build:
    LLM request shape (adapted from `summarizeWithLlm`, MIT) so they can change
    the instruction, add authoritative state, pass an explicit reasoning effort,
    and validate output before installation.
-6. **The native formulas are mirrored in one adapter.** DSH's installed build is
+6. **Windows temp files cannot prove POSIX modes.** `%TEMP%` is the per-user
+   boundary, Node's `stat.mode` on Windows only reflects the read-only
+   attribute, and an ACL check would need a native module. The handoff writer
+   therefore verifies `0600` on POSIX and skips only that assertion on
+   `win32`, keeping the byte-for-byte read-back and per-attempt directory. The
+   platform and stat call are injectable test seams.
+7. **Inspect must name the engine it is looking at.** A Web session can run a
+   preset-owned native engine (the shipped `standard` preset). `serviceFor`
+   plus `symbols.original` distinguishes host, our preset, and a foreign preset;
+   foreign sessions get `engine.inspectApplies: false` with `budget`/`preview`
+   null while `lastCompaction` still comes from their real events.
+8. **The inspect route fails closed.** It is registered only when both
+   `webServer` and `connection` exist; if the fence service disappears the
+   handler returns 503. The smoke mints a real Connection session cookie and
+   exercises the route through the real auth path (401 unauthenticated).
+9. **The preview upper bound includes native framing.** `NATIVE_CHECKPOINT_FRAMING_TOKENS`
+   prices the native preamble and `<compacted-summary>` tags so
+   `afterUpperBoundTokens` is a true upper bound; the text is reproduced only
+   for pricing (MIT notice), never used to write checkpoints.
+10. **The native formulas are mirrored in one adapter.** DSH's installed build is
    bundled and does not export `resolveCompactSpec`, `resolveTargetPolicy`, or
    `selectCompactableRange`. `src/budget.js` reproduces them for the inspect
    preview and the summary budget. The smoke asserts the preview cut against the
    actual `shadowedRange` of a real automatic compaction; when changing the DSH
    baseline, re-check those formulas first.
-7. **No new session events, no second history, no write API.** Successful work
+11. **No new session events, no second history, no write API.** Successful work
    produces the native compaction events/replacement; inspect is a GET projection
    over those events plus the singleton token meter.
-8. **Handoff body is the checkpoint summary.** The temp file and checkpoint share
+12. **Handoff body is the checkpoint summary.** The temp file and checkpoint share
    the exact same Markdown body. That makes file deletion harmless for replay and
    avoids a sidecar index. Continuation is triggered by the live manual call,
    never by observing an event, so replay cannot reschedule it.
@@ -117,21 +137,28 @@ installed build:
 - `prompts.test.mjs` — required sections, state rendering/caps, omission notes,
   structure rejection, mode detection, redaction patterns, handoff document
   composition, continuation text.
-- `handoff.test.mjs` — temp directory/file uniqueness, `0600` file and read-back,
-  empty-body rejection, path-safe session ids, explicit timestamps.
-- `engine.test.mjs` — frozen snapshot, missing companion error, native delegation,
-  goal state + effort + cache-shape request, unsupported effort, truncation /
-  malformed-output rejection, handoff file embedding, budget trimming, route
-  resolution, supersede identity, exactly-one continuation and blockers.
+- `handoff.test.mjs` — temp directory/file uniqueness, POSIX `0600` and
+  Windows synthetic-mode paths, read-back verification, empty-body rejection,
+  path-safe session ids, explicit timestamps.
+- `engine.test.mjs` — frozen snapshot, missing companion error, native delegation
+  and native in-flight summary marking, goal state + effort + cache-shape
+  request, unsupported effort, truncation / malformed-output rejection, handoff
+  file embedding and rawOutput redaction, budget trimming, route resolution,
+  supersede identity, exactly-one continuation and blockers, continuation
+  outcome recording.
 - `state.test.mjs` — read-only goal/todo/question/job/child collection and every
   continuation blocker.
-- `inspect.test.mjs` — `lastCompaction` status/trigger/mode projection, budget and
-  preview math, null-not-zero semantics, live read-only behavior, 404/503
+- `inspect.test.mjs` — `lastCompaction` status/trigger/mode projection (including
+  recorded-error surfacing on an open bracket), budget/preview math with native
+  framing, null-not-zero semantics, engine ownership for host/preset/foreign/
+  cold sessions, handoff-continuation exposure, live read-only behavior, 404/503
   mapping, cold `observeSession` path.
-- `fence.test.mjs` — 401/403 ordering, failing fence 503, 400/405, documented
-  response shape and no-store.
+- `fence.test.mjs` — 401/403 ordering, missing-fence 503, registration waiting
+  for both webServer and connection, 400/405, documented response shape and
+  no-store.
 - `client.test.mjs` — module identity, alias keys, slot registration/release,
-  summary/page copy, no editing controls.
+  summary/page copy, no editing controls, native-mode "not applicable"
+  effort/cache display.
 - `package.test.mjs` — npm contract, file whitelist, patch structure, verbatim
   standard-preset copy (when `DSH_PACKAGE_ROOT` is set), release workflow, and
   tracked-file hygiene.
@@ -162,16 +189,22 @@ What it does:
    `low`/`high`, and special handling for `purpose: 'compaction'` and
    `'session-title'`.
 4. Boot 1 — goal mode, auto on:
-   auto pressure compaction and native event sequence; inspect over HTTP;
-   preview range equals the actual native `shadowedRange`; read-only checks;
-   goal state in the instruction; failure keeps the surface and turn; recovery;
-   manual failure mapping; manual no-op; 400/404/405/no-store; settings save →
-   `requiresReload` → active snapshot unchanged.
-5. Boot 2 — handoff mode, auto off (reloaded): manual `/compact` writes a
-   `0600` temp file whose bytes equal the embedded checkpoint; exactly one
-   same-session follow-up; effort/cache-priority request shape; delete file +
-   flush; paused goal blocks continuation but still commits the checkpoint;
-   save `auto: true`.
+   auto pressure compaction and native event sequence; authenticated inspect
+   over HTTP (401 unauthenticated, 400/404/405/no-store); preview range equals
+   the actual native `shadowedRange`; read-only checks; goal state in the
+   instruction; failure keeps the durable surface and turn; recovery; manual
+   failure mapping; manual no-op; settings save → `requiresReload` → active
+   snapshot unchanged.
+5. Boot 2 — handoff mode, auto off (reloaded): manual `/compact` writes the
+   temp file, the summary/rawOutput/replacement/file contain no planted secret,
+   exactly one same-session follow-up is scheduled and visible in inspect;
+   effort/cache-priority request shape; delete file + flush; paused goal blocks
+   continuation but still commits the checkpoint; a real `standard` preset
+   session is reported as a foreign engine; real flush failure →
+   `persistence-error`; real in-flight abort → `cancelled`; simulated
+   `compaction/end` append failure → `failed` with the recorded error; a real
+   timed pending question, real running job, and real running child each skip
+   continuation and expose blockers; save `auto: true`.
 6. Boot 3 — handoff mode, auto on: automatic handoff compaction adds no turn;
    the `better-compact` preset provides an isolated engine and produces exactly
    one compaction (no host double-compaction); save `mode: native`.
@@ -186,6 +219,10 @@ touches the user's real profile or the running GUI.
 
 ## Debugging notes
 
+- Until S3 ships, there is no in-app editor. The Plugins row page is read-only;
+  edit the `dsh-better-compact` row in the profile's `cordis.patch.yml` and
+  restart the profile. The settings service still owns revision/CAS when an
+  editor arrives.
 - `ctx.compaction` must be a `BetterCompactEngine`. If it is absent, the bundle
   row was not selected or the row failed to load; read the Loader diagnostic.
 - If Web sessions do not use the plugin, check the selected preset. Shipped
@@ -204,8 +241,16 @@ touches the user's real profile or the running GUI.
   session log's `compaction/end.error`. Common causes: provider failure,
   truncation at the cap, missing required sections, handoff file write/read-back
   failure, or the framed summary not being smaller than the shadowed span.
-- The inspect route is read-only. Do not add mutating verbs; settings writes go
-  through the host `settings`/configForms pipeline only.
+- The inspect route is read-only and fails closed: no `connection` service means
+  no route. Smoke HTTP uses a real `/connect` cookie; a 401 usually means the
+  cookie was not minted or the profile restarted.
+- `engine.owner`/`inspectApplies` distinguishes the serving engine. A Web session
+  on the `standard` preset correctly reports a foreign engine and no
+  budget/preview; that is not a missing backend.
+- Windows handoff writes skip the POSIX `0600` assertion (Node synthesizes
+  `stat.mode` there). The read-back check still runs; see `handoff.test.mjs`.
+- Do not add mutating verbs to inspect; settings writes go through the host
+  `settings`/configForms pipeline only.
 
 ## Updating the DSH baseline
 

@@ -31,9 +31,11 @@ package `@deepseek-ai/dsh-compaction-basic` (and, for the preset copy,
   one row (`compaction-basic` → `dsh-better-compact/engine`) and the preset
   identity/metadata changed. The original copyright and MIT license apply.
 
-The native checkpoint preamble and `<compacted-summary>` framing are *not*
-copied: native mode calls the inherited `summarize()` implementation, so the
-installed host remains their only source.
+The native checkpoint preamble and `<compacted-summary>` framing text are
+reproduced in `src/inspect.js` **only** to price the preview's replacement upper
+bound (`NATIVE_CHECKPOINT_FRAMING_TOKENS`); native mode itself still calls the
+inherited `summarize()` implementation, so the installed host remains the only
+source of the actual framing written to a checkpoint.
 
 ## Design references (no source copied)
 

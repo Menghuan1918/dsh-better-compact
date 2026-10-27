@@ -48,6 +48,28 @@ After installing or changing a load-time setting, **restart the DSH profile**
 (restart the DSH process). Refreshing the Web page only reloads the UI; it does
 not replace a running engine. See [apply-on-reload](#apply-on-reload).
 
+### Configuring before S3 ships an editor
+
+This S2 build has no in-app editor by design; the Plugins page entry is a
+read-only summary. Configure the row in the profile's `cordis.patch.yml` (the
+same file the Host settings service writes) and restart the profile:
+
+```yaml
+- id: dsh-better-compact
+  config:
+    mode: handoff          # native | goal | handoff
+    auto: true
+    thresholdRatio: 0.8
+    headroomTokens: 65536
+    retainRatio: 0.16
+    maxTokens: 65536
+```
+
+`retainTokens` replaces `retainRatio` (never set both). Omitted fields take the
+documented defaults. The future S3 page will use the same schema and the
+Host configForms revision/CAS path; nothing in this backend needs to change for
+it.
+
 ### Web: select the `better-compact` preset
 
 The shipped Web composition disables the host-plane compaction rows and mounts
@@ -212,7 +234,12 @@ is advisory only. Then:
    (`os.tmpdir()`, so Unix `TMPDIR` or `/tmp`);
 2. the final document — including the **actual** file path, session id, and
    creation time in a deterministic header — is written with owner-only
-   permissions (`0600`, directory `0700`) and read back byte-for-byte;
+   permissions, read back byte-for-byte, and verified by platform:
+   on POSIX the file must report mode `0600` with a `0700` attempt directory;
+   Windows has no POSIX mode bits (`stat.mode` only reflects the read-only
+   attribute), so the POSIX assertion is skipped there and the proof is the
+   per-user OS temp directory plus the exact read-back. An ACL check is not
+   practical with Node's standard library and is not claimed;
 3. the same document is returned as the summary body, so the native checkpoint
    replacement is self-contained; deleting the file later does not break replay;
 4. if and only if this was a live, successful **manual** `compactNow`, the agent
@@ -239,7 +266,7 @@ it cannot recognize every credential format.
 
 | Situation | Behavior |
 | --- | --- |
-| Automatic pressure summary fails before replacement | Warning; original surface stays; the turn continues. A later turn may compact successfully. |
+| Automatic pressure summary fails before replacement | Warning; the latest durable surface is kept (pruning or an earlier replacement may already have landed) and the turn continues. A later turn may compact successfully. |
 | Manual summary fails | The native command reports a `ManualCompactionError`-based error (`could not produce a useful summary`); the attempt is recorded; no checkpoint is installed. |
 | Provider-confirmed context overflow | Native bounded recovery (`maxOverflowRetries`); on failure the real request error is preserved. |
 | Replacement appended, durability flush fails | Native `ManualCompactionError('persistence')`: history may have changed but saving failed; no rollback is claimed. |
@@ -250,17 +277,24 @@ it cannot recognize every credential format.
 
 Enhanced modes never fall back to native mode automatically. Native mode itself
 is the inherited implementation, byte-compatible with the same native config.
+As the design requires: an external native recovery listener
+(`compaction/summary-error`) may already have written durable changes before a
+later failure; "automatic compaction failed" therefore never means "the session
+has no side effects". Inspect preserves the recorded attempt and its error
+instead of claiming a clean rollback.
 
 ## Read-only inspect API
 
 `GET /better-compact/api/inspect`, optional `?sessionId=<id>`.
 
-The route is registered only where a Host webserver exists. It applies the Host
-`connection.requestRejection(req)` fence when that service is present (401/403),
-accepts only `GET` (405), validates the query (400 for unknown/duplicate/empty
-`sessionId`), returns 404 for an unknown/invisible session, and always sends
-`cache-control: no-store` JSON. There is no write API, no cross-origin
-allowance, and no plugin-owned trust switch.
+The route is registered only when **both** a Host webserver and the Host
+`connection` trust fence exist. A webserver without the fence fails closed: the
+route is not registered and an already-registered handler returns 503 if the
+fence disappears. Every request passes `connection.requestRejection(req)`
+(401/403); only `GET` is accepted (405), the query is validated (400 for
+unknown/duplicate/empty `sessionId`), an unknown/invisible session is 404, and
+every JSON response carries `cache-control: no-store`. There is no write API,
+no cross-origin allowance, and no plugin-owned trust switch.
 
 Response fields (unknown values are `null`, never `0`):
 
@@ -269,9 +303,11 @@ Response fields (unknown values are `null`, never `0`):
 | `activeConfig` | The frozen configuration this engine instance holds. No credentials. |
 | `requiresReload` | Saved value differs from `activeConfig` (including a saved value that no longer normalizes). |
 | `sessionId` | Echo of the requested session, or `null` without one. |
+| `engine` | `null` without a session, else `{owner, inspectApplies, reason}`. `owner` is `host`, `better-compact-preset`, `foreign-preset`, or `unknown`. A **foreign preset** (the shipped Web `standard` preset, for example) runs its own native engine, so `inspectApplies: false`, `budget`/`preview` are `null`, and `lastCompaction` is still projected from that session's real events. A cold/non-live session cannot prove ownership and is reported `unknown` with the active configuration. |
 | `budget` | `null` without a session, else `{contextWindow, currentTokens, measurement, fixedTokens, thresholdTokens, retainTokens, summaryMaxTokens}`. `measurement` is `measured` (provider-usage anchor), `estimated` (fixed heuristic), or `unavailable`. |
 | `preview` | `null` without a usable session, else `{beforeTokens, afterUpperBoundTokens, rangeStart, rangeEnd, reason}`. `rangeStart`/`rangeEnd` are native surface seqs from the automatic-pressure safe-cut rule; `afterUpperBoundTokens` includes the summary output budget and is an upper-bound estimate, not a prediction. `reason` explains below-trigger/no-range/unavailable. |
 | `lastCompaction` | `null` when no compaction exists, else `{id, trigger, status, mode, beforeTokens, afterTokens, durationMs, cacheReadTokens, cacheWriteTokens, error}` projected only from real events/usage. |
+| `handoffContinuation` | `null` until this process makes a manual handoff continuation decision, else `{compactionId, status: 'scheduled'\|'skipped', blockers, at}`. `blockers` names queued input, paused/blocked goal, pending question, running job, running child, cancellation, or a queue failure so S3 can show why nothing continued. |
 
 `lastCompaction` rules:
 
@@ -287,6 +323,8 @@ Response fields (unknown values are `null`, never `0`):
   completed.
 - `mode` is `native`/`goal`/`handoff` only when the checkpoint's structure
   proves it; older/foreign records are `null`.
+- A recorded commit/append failure on an open bracket is surfaced in `error`
+  rather than reported as a silent `failed` with `error: null`.
 - `cacheReadTokens`/`cacheWriteTokens` are reported only when the summary event
   carried real provider usage; absence is not zero. No “savings percentage” is
   fabricated.
@@ -331,11 +369,20 @@ Verified in this repository (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)):
   permissions/read-back, engine routing/effort/failure/continuation gating,
   inspect projection/null semantics/fence, preset copy, client slots;
 - a real-profile smoke with a temp `DSH_HOME`, scripted LLM adapter, real
-  AgentLoop/session log/token meter/commands/settings/config-editor/webserver:
-  automatic pressure, manual `/compact`, native event sequence, inspect over
-  HTTP, failure/recovery, handoff file + one continuation + replay after file
-  deletion, preset isolation/no double-compaction, and save → reload →
-  `activeConfig` update. Run the exact commands for the current test counts.
+  AgentLoop/session log/token meter/commands/settings/config-editor/webserver,
+  real Connection authentication, real job registry, and real child agents:
+  automatic pressure, manual `/compact`, native event sequence, authenticated
+  inspect over HTTP (401/400/404/405/no-store), failure/recovery, handoff file
+  + redacted raw output + one continuation + replay after file deletion, a real
+  standard-preset foreign-engine session, persistence/flush failure,
+  in-flight cancellation, commit-stage append failure, pending-question/job/
+  child continuation gates, preset isolation/no double-compaction, and save →
+  reload → `activeConfig` update. Run the exact commands for the current test
+  counts.
+
+The current build was verified with **84 unit/component tests** and **44
+real-profile smoke checks** at commit time; always prefer the fresh command
+output over these numbers.
 
 **Not verified here:** real-model summary fidelity, reasoning-effort quality,
 provider cache-read/write hit rates against a real provider, and the S3 visual
