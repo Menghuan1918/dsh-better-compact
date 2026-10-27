@@ -33,7 +33,7 @@ window.__ModuleLoader__.load({
     const SUMMARY =
       'Native, goal-aware, or file-handoff compaction checkpoints with a read-only inspect API.'
     const NOTE =
-      'The visual compaction page (mode cards, budget diagram, live inspect status) is not part of this build. Edit this row\u2019s configuration through the Host, then reload the DSH profile to apply it: saving a setting does not reconfigure the running engine.'
+      'The visual compaction editor (mode cards, budget diagram, live inspect status) is not part of this build. Until it ships, edit the dsh-better-compact row in the profile\u2019s cordis.patch.yml and restart the DSH profile; this Plugins page is read-only and saving a setting does not reconfigure the running engine.'
 
     /** One stable row-config entry shared by every assembly key. */
     function BetterCompactConfigEntry(props) {
@@ -53,7 +53,15 @@ window.__ModuleLoader__.load({
         } else if (typeof value.retainRatio === 'number') {
           lines.push(`retainRatio: ${value.retainRatio}`)
         }
-        lines.push(`cachePriority: ${String(value.cachePriority)}`)
+        if (value.mode === 'native') {
+          lines.push('reasoningEffort: not applicable in native mode (the native summarizer decides)')
+          lines.push('cachePriority: not applicable in native mode (the native summarizer decides)')
+        } else {
+          if (typeof value.reasoningEffort === 'string' && value.reasoningEffort.length > 0) {
+            lines.push(`reasoningEffort: ${value.reasoningEffort}`)
+          }
+          lines.push(`cachePriority: ${String(value.cachePriority)}`)
+        }
       }
       return h(
         'div',

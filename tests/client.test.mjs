@@ -126,9 +126,10 @@ test('page slot is read-only and says saving requires a profile reload', () => {
     )
   })
   const json = JSON.stringify(tree.toJSON())
-  assert.match(json, /reload the DSH profile/)
+  assert.match(json, /restart the DSH profile/)
   assert.match(json, /mode: goal/)
   assert.match(json, /headroomTokens: 65536/)
+  assert.match(json, /cachePriority: true/)
   assert.equal(json.includes('"input"'), false)
   assert.equal(json.includes('"button"'), false)
   act(() => tree.unmount())
@@ -137,5 +138,26 @@ test('page slot is read-only and says saving requires a profile reload', () => {
     tree = TestRenderer.create(h(exports.BetterCompactConfigEntry, { view: 'page' }))
   })
   assert.match(JSON.stringify(tree.toJSON()), /Waiting for the Host configuration form/)
+  act(() => tree.unmount())
+
+  act(() => {
+    tree = TestRenderer.create(
+      h(exports.BetterCompactConfigEntry, {
+        view: 'page',
+        form: {
+          state: {
+            status: 'ready',
+            writable: true,
+            revision: 4,
+            value: { mode: 'native', auto: true, reasoningEffort: 'high', cachePriority: false },
+          },
+        },
+      }),
+    )
+  })
+  const nativeJson = JSON.stringify(tree.toJSON())
+  assert.match(nativeJson, /reasoningEffort: not applicable in native mode/)
+  assert.match(nativeJson, /cachePriority: not applicable in native mode/)
+  assert.doesNotMatch(nativeJson, /reasoningEffort: high/)
   act(() => tree.unmount())
 })
