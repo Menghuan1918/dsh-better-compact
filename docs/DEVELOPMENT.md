@@ -1,0 +1,233 @@
+# dsh-better-compact — development guide
+
+For maintainers, source installers, and people debugging host compatibility.
+Everyday usage is in [README](../README.md). The design specs that drove this
+implementation are deliberately **not** in this repository; do not add them to
+commits, docs, or the npm package.
+
+## Status and compatibility
+
+- Package version: `0.1.0`.
+- Verified DSH build: `0.2.1-rc.2`; `engines.dsh` is
+  `>=0.2.1-rc.2 <0.3.0`. That range admits later RCs but is not a per-version
+  verification promise.
+- Node.js `^22.19.0 || >=24.0.0`.
+- Pure ESM, no build step, no generated assets.
+- The desktop/Web GUI acceptance of the visual settings page belongs to S3 and
+  was **not** performed here. The S2 browser module is a minimal, read-only
+  config-slot entry.
+
+## Repository layout
+
+| Path | Responsibility |
+| --- | --- |
+| [package.json](../package.json) | npm metadata, exports, peers, `dsh.bundle.patch`, `dsh.client`. |
+| [cordis.patch.yml](../cordis.patch.yml) | Standalone composition: disable host `compaction-basic`, insert host companion + host-plane engine rows. |
+| [presets/better-compact.patch.yml](../presets/better-compact.patch.yml) | Selectable Web preset: pinned rc.2 `standard` copy with the compaction group's engine swapped. |
+| [src/index.js](../src/index.js) | Host companion row: volatile `Config`, `betterCompactConfig` service, settings policy, GET inspect route, test seam for the fence. |
+| [src/engine.js](../src/engine.js) | `BetterCompactEngine extends BasicCompactionEngine`: enhanced `summarize()`, preset-supersede guard, manual handoff continuation, failure classification. |
+| [src/config.js](../src/config.js) | Single source of truth for defaults, schema, normalization, native projection, row keys. |
+| [src/budget.js](../src/budget.js) | Clearly marked adapter re-implementing the native capacity/retention/selection formulas and fixed-prefix pricing. |
+| [src/prompts.js](../src/prompts.js) | Goal/handoff instructions, authoritative-state rendering, output structure check, mode detection, conservative redaction, handoff document/continuation text. |
+| [src/state.js](../src/state.js) | Read-only goal/todo/question/job/child collection and continuation blockers. |
+| [src/handoff.js](../src/handoff.js) | Per-attempt temp directory/path, owner-only write, permission stat, byte-for-byte read-back. |
+| [src/live.js](../src/live.js) | Process-local "summary in flight" and classified-failure observations for inspect only; no durable claim. |
+| [src/inspect.js](../src/inspect.js) | Live/cold session inspection, budget/preview construction, `lastCompaction` projection, inspect error taxonomy. |
+| [src/client.js](../src/client.js) | Zero-build browser closure; registers the stable row-config keys. |
+| [scripts/runtime-smoke.mjs](../scripts/runtime-smoke.mjs) | Four-boot real-profile smoke with a temp DSH home and scripted adapter. |
+| [tests/](../tests) | `node:test` unit/component tests; no browser build. |
+| [third-party/](../third-party) | MIT notice/license for adapted DSH material. |
+
+## Install for development
+
+```sh
+npm install
+DSH_PACKAGE_ROOT="/path/to/node_modules/@deepseek-ai/dsh" npm test
+```
+
+`npm install` installs the declared peer range (the same packages the host
+provides at runtime) plus test-only React/js-yaml. Tests import the public peer
+packages directly.
+
+Install this checkout into a throwaway profile to try it interactively:
+
+```sh
+dsh plugin --profile <profile> add /absolute/path/to/dsh-better-compact
+# restart the DSH process for the new profile wiring
+```
+
+Inside the Web UI choose the **Better Compact** preset for the session (or set
+it as the default). Headless/TUI profiles use the host-plane engine directly.
+
+## Architecture decisions
+
+These are host-driven and should not be "simplified" without re-verifying the
+installed build:
+
+1. **Two rows, one package.** `dsh-better-compact` is the host companion (config
+   schema/service/inspect/client), `dsh-better-compact/engine` is the compaction
+   provider. The companion never registers `ctx.compaction`; the engine never
+   owns UI/config parsing.
+2. **One provider per realm.** `BasicCompactionEngine` provides the
+   `compaction` service. Web presets isolate that service per agent; the
+   `better-compact` preset mounts our engine inside the same group as
+   `command-compact` and `tool-result-pruner`.
+3. **Host-plane engine guard.** The standalone bundle also inserts a host-plane
+   engine for headless/TUI. Agent events are delivered to untagged root
+   listeners, so in Web the host engine would otherwise see every preset agent.
+   `compactIfNeeded` compares `ctx.agentPresets.serviceFor(agent,'compaction')`
+   with itself and returns `null` when a preset owns the engine. Cordis wraps
+   services in proxies, so identity is compared through
+   `symbols.original`; a raw `!==` check wrongly treats a preset engine as
+   "another" engine.
+4. **Frozen snapshot + live current.** The Loader's volatile config fields make
+   saves live without remounting. The engine intentionally does not follow them:
+   load-time snapshot keeps one coherent strategy. `inspect` compares the saved
+   value with the snapshot and returns `requiresReload`.
+5. **Only `summarize()` is subclassed.** Selection, retention, pricing, locking,
+   the bracket transaction, flush, overflow recovery, and retry loops stay in
+   the inherited engine. Enhanced modes re-implement only the auxiliary
+   LLM request shape (adapted from `summarizeWithLlm`, MIT) so they can change
+   the instruction, add authoritative state, pass an explicit reasoning effort,
+   and validate output before installation.
+6. **The native formulas are mirrored in one adapter.** DSH's installed build is
+   bundled and does not export `resolveCompactSpec`, `resolveTargetPolicy`, or
+   `selectCompactableRange`. `src/budget.js` reproduces them for the inspect
+   preview and the summary budget. The smoke asserts the preview cut against the
+   actual `shadowedRange` of a real automatic compaction; when changing the DSH
+   baseline, re-check those formulas first.
+7. **No new session events, no second history, no write API.** Successful work
+   produces the native compaction events/replacement; inspect is a GET projection
+   over those events plus the singleton token meter.
+8. **Handoff body is the checkpoint summary.** The temp file and checkpoint share
+   the exact same Markdown body. That makes file deletion harmless for replay and
+   avoids a sidecar index. Continuation is triggered by the live manual call,
+   never by observing an event, so replay cannot reschedule it.
+
+## Test coverage
+
+`npm test` runs `node --test` over:
+
+- `config.test.mjs` — schema defaults, volatile fields, normalization, all
+  cross-field conflicts, native-projection stripping, policy-level headroom
+  semantics, stable keys.
+- `budget.test.mjs` — exact native threshold/retention arithmetic, per-target
+  overrides, capacity/retention errors, safe-cut tail retention, tool-pairing
+  boundaries, fixed-prefix pricing.
+- `prompts.test.mjs` — required sections, state rendering/caps, omission notes,
+  structure rejection, mode detection, redaction patterns, handoff document
+  composition, continuation text.
+- `handoff.test.mjs` — temp directory/file uniqueness, `0600` file and read-back,
+  empty-body rejection, path-safe session ids, explicit timestamps.
+- `engine.test.mjs` — frozen snapshot, missing companion error, native delegation,
+  goal state + effort + cache-shape request, unsupported effort, truncation /
+  malformed-output rejection, handoff file embedding, budget trimming, route
+  resolution, supersede identity, exactly-one continuation and blockers.
+- `state.test.mjs` — read-only goal/todo/question/job/child collection and every
+  continuation blocker.
+- `inspect.test.mjs` — `lastCompaction` status/trigger/mode projection, budget and
+  preview math, null-not-zero semantics, live read-only behavior, 404/503
+  mapping, cold `observeSession` path.
+- `fence.test.mjs` — 401/403 ordering, failing fence 503, 400/405, documented
+  response shape and no-store.
+- `client.test.mjs` — module identity, alias keys, slot registration/release,
+  summary/page copy, no editing controls.
+- `package.test.mjs` — npm contract, file whitelist, patch structure, verbatim
+  standard-preset copy (when `DSH_PACKAGE_ROOT` is set), release workflow, and
+  tracked-file hygiene.
+
+Run with the baseline preset comparison enabled:
+
+```sh
+DSH_PACKAGE_ROOT="/Users/<you>/Library/Application Support/dsh-tauri/dependencies/dsh/node_modules/@deepseek-ai/dsh" npm test
+```
+
+## Real-profile smoke
+
+```sh
+DSH_PACKAGE_ROOT="/path/to/node_modules/@deepseek-ai/dsh" npm run smoke
+```
+
+What it does:
+
+1. Creates a temp `DSH_HOME` and an `it` profile from the installed
+   `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-headless` bundles plus this
+   package. Only shipped files are copied, with `@deepseek-ai` symlinked to the
+   runtime; no repo `node_modules` or design docs are used.
+2. Disables the headless startup/runner rows, inserts a workspace row, the
+   model-selection settings row, an agent-preset registry, and a real
+   `@deepseek-ai/dsh-host-webserver` on port 0.
+3. Registers a scripted LLM adapter (`it-noop/noop`) with
+   `contextWindow: 30000`, `defaultMaxTokens: 64`, reasoning efforts
+   `low`/`high`, and special handling for `purpose: 'compaction'` and
+   `'session-title'`.
+4. Boot 1 — goal mode, auto on:
+   auto pressure compaction and native event sequence; inspect over HTTP;
+   preview range equals the actual native `shadowedRange`; read-only checks;
+   goal state in the instruction; failure keeps the surface and turn; recovery;
+   manual failure mapping; manual no-op; 400/404/405/no-store; settings save →
+   `requiresReload` → active snapshot unchanged.
+5. Boot 2 — handoff mode, auto off (reloaded): manual `/compact` writes a
+   `0600` temp file whose bytes equal the embedded checkpoint; exactly one
+   same-session follow-up; effort/cache-priority request shape; delete file +
+   flush; paused goal blocks continuation but still commits the checkpoint;
+   save `auto: true`.
+6. Boot 3 — handoff mode, auto on: automatic handoff compaction adds no turn;
+   the `better-compact` preset provides an isolated engine and produces exactly
+   one compaction (no host double-compaction); save `mode: native`.
+7. Boot 4 — native mode: cold inspect of the persisted handoff session (mode
+   `handoff`), replay after the file was deleted, and native auto compaction with
+   the inherited summarizer, no effort override, and native request shape.
+
+`BETTER_COMPACT_KEEP_SMOKE_HOME=1` keeps the temp home for post-mortem; the
+session log is zstd-compressed (`session.v4.jsonl.zstd`) and the profile
+`cordis.patch.yml` shows what the settings service persisted. The smoke never
+touches the user's real profile or the running GUI.
+
+## Debugging notes
+
+- `ctx.compaction` must be a `BetterCompactEngine`. If it is absent, the bundle
+  row was not selected or the row failed to load; read the Loader diagnostic.
+- If Web sessions do not use the plugin, check the selected preset. Shipped
+  presets own their compaction engine; only `better-compact` contains ours.
+- If `requiresReload` stays false after a save, the save did not change a
+  volatile field (or the row is not addressable); check
+  `ctx.settings.describe()` for the `dsh-better-compact` namespace/revision.
+- The native `todos` projection resets on every `turn/start`. Automatic
+  pressure compaction runs at that boundary, so it usually has no todo list;
+  manual idle compaction sees the previous turn's list. This is host behavior,
+  not a missing read path.
+- If enhanced summaries fail with `BETTER_COMPACT_BUDGET`, the replayed span plus
+  `maxTokens` does not fit `contextWindow`; this is explicit rather than a silent
+  truncation. Use a larger model, lower `maxTokens`, or compact earlier.
+- If a manual handoff reports `ManualCompactionError('summary')`, inspect the
+  session log's `compaction/end.error`. Common causes: provider failure,
+  truncation at the cap, missing required sections, handoff file write/read-back
+  failure, or the framed summary not being smaller than the shadowed span.
+- The inspect route is read-only. Do not add mutating verbs; settings writes go
+  through the host `settings`/configForms pipeline only.
+
+## Updating the DSH baseline
+
+1. Read the installed `@deepseek-ai/dsh-compaction-basic` source and re-check
+   `resolveCompactSpec`, `resolveTargetPolicy`, `selectCompactableRange`,
+   `summarizeWithLlm`, `frameSummary`, and the manual/overflow retain rules
+   against `src/budget.js` / `src/engine.js`.
+2. Refresh `presets/better-compact.patch.yml` from the new
+   `@deepseek-ai/dsh-web-app/presets/standard.patch.yml` and change only the
+   preset identity/metadata and the compaction group engine row. The package
+   test compares it against the installed standard preset while
+   `DSH_PACKAGE_ROOT` points at that install.
+3. Re-check the Web composition: which rows are preset-owned/disabled and
+   whether the preset group still isolates `compaction`/`toolResultPruner`.
+4. Re-run unit tests and the smoke; then check the current GUI/URL only as part
+   of the S4 integration task.
+
+## Known unverified areas
+
+- Real-model summary fidelity and adherence (controlled scripted output only).
+- Real provider cache-read/write hits and cost effects.
+- Reasoning-effort quality (capability validation is tested; model behavior is
+  not).
+- The S3 visual settings page and any screenshot/keyboard acceptance.
+- Apollo combination/loading matrix and migration (S4).
