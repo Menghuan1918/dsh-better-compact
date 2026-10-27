@@ -43,6 +43,7 @@ test('package metadata matches the published contract', () => {
   assert.deepEqual(pkg.dsh.client.inject, [
     '@deepseek-ai/dsh-client-connection',
     '@deepseek-ai/dsh-client-ui-settings',
+    '@deepseek-ai/dsh-api-session-controller',
   ])
 })
 
