@@ -70,6 +70,12 @@ const manifest = JSON.parse(await readFile(manifestPath, 'utf8'))
 manifest.dependencies['dsh-better-compact'] = `file:${pluginDir}`
 await writeFile(manifestPath, JSON.stringify(manifest, null, 2))
 
+/** Load the shipped standard preset so a real foreign-engine session can be inspected. */
+const standardPresetPatches = appBoot.loadOverlayPatches(
+  'better-compact-smoke',
+  join(dirname(dsh), 'dsh-web-app', 'presets', 'standard.patch.yml'),
+)
+
 /** Initial row override: absolute retention + a small-capacity test route. */
 const INITIAL_CONFIG = {
   mode: 'goal',
@@ -85,9 +91,11 @@ await writeFile(
   join(profileDir, 'cordis.patch.yml'),
   JSON.stringify(
     [
+      ...standardPresetPatches,
       { id: 'headless-startup', disabled: true },
       { id: 'headless-runner', disabled: true },
       { id: 'dsh-better-compact', config: INITIAL_CONFIG },
+      { id: 'credentials', disabled: false, config: { watch: false } },
       {
         insert: [
           {
@@ -108,6 +116,16 @@ await writeFile(
             id: 'webserver',
             name: '@deepseek-ai/dsh-host-webserver',
             config: { host: '127.0.0.1', port: 0, compression: 'none' },
+          },
+          {
+            id: 'connection',
+            name: '@deepseek-ai/dsh-client-connection',
+            config: { trustedHosts: [], cookieMaxAgeDays: 30 },
+          },
+          {
+            id: 'tool-ask-user',
+            name: '@deepseek-ai/dsh-tool-ask-user',
+            config: { mode: 'timed', timeout: 5 },
           },
         ],
       },
@@ -141,6 +159,8 @@ const goalTemplate = () =>
     '## Next Actions',
     '- next',
   ].join('\n')
+/** Deliberate credential in model output; redaction must remove it everywhere. */
+const HANDOFF_SECRET = 'sk-abcdefghijklmnopqrstuvwx123456'
 const handoffTemplate = () =>
   [
     '# Session Handoff',
@@ -164,6 +184,8 @@ const handoffTemplate = () =>
     '- next',
     '## Suggested Skills',
     '- suggestion only',
+    '## Redaction Probe',
+    `- leaked token: ${HANDOFF_SECRET}`,
   ].join('\n')
 const nativeTemplate = () =>
   [
@@ -214,6 +236,10 @@ const adapter = {
     if (options.purpose === 'compaction') {
       llmState.compactionCalls.push(options)
       if (llmState.compactionBehavior === 'throw') throw new Error('scripted compaction provider failure')
+      if (llmState.compactionBehavior === 'hang') {
+        await waitForAbort(options.signal)
+        return
+      }
       if (llmState.compactionBehavior === 'max-tokens') {
         yield { type: 'block-start', index: 0, blockType: 'text' }
         yield { type: 'block-end', index: 0, block: { type: 'text', text: 'partial' } }
@@ -237,16 +263,67 @@ const adapter = {
       yield { type: 'finish', reason: { kind: 'stop' } }
       return
     }
+    if (llmState.compactionBehavior === 'hang' && options.purpose === 'compaction') {
+      await waitForAbort(options.signal)
+      return
+    }
     llmState.normalCalls += 1
-    const next = llmState.scripted.shift()
-    const response = typeof next === 'function' ? next() : (next ?? 'Acknowledged.')
+    let next = llmState.scripted.shift()
+    if (typeof next === 'function') next = next()
+    if (next === undefined || next === null) next = 'Acknowledged.'
+    if (typeof next === 'object' && next.hang === true) {
+      await waitForAbort(options.signal)
+      return
+    }
+    if (typeof next === 'object' && typeof next.tool === 'string') {
+      const id = `it-tool-${randomUUID()}`
+      const args = JSON.stringify(next.arguments ?? {})
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' }
+      yield { type: 'tool-call-delta', index: 0, id, name: next.tool, argumentsDelta: args }
+      yield { type: 'block-end', index: 0, block: { type: 'tool-call', id, name: next.tool, arguments: args } }
+      yield { type: 'finish', reason: { kind: 'tool-calls' } }
+      return
+    }
+    const response =
+      typeof next === 'object' && typeof next.text === 'string' ? next.text : String(next)
     yield { type: 'block-start', index: 0, blockType: 'text' }
     yield { type: 'block-end', index: 0, block: { type: 'text', text: response } }
     yield { type: 'finish', reason: { kind: 'stop' } }
   },
 }
 
-/** Boot the profile with the scripted provider registered. */
+/** Reject once the operation signal aborts; used to hold a provider stream open. */
+function waitForAbort(signal) {
+  return new Promise((resolve, reject) => {
+    if (signal === undefined) return resolve()
+    if (signal.aborted) return reject(new Error('aborted'))
+    signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+  })
+}
+
+/** Authenticated browser-session cookie for the inspect route (Host connection). */
+let inspectorCookie = null
+
+/**
+ * Exchange the process launch token for a real Connection API cookie. The
+ * inspect route is only registered when the connection fence exists, so every
+ * HTTP check below runs through the real authentication path.
+ */
+async function authenticateInspector(ctx) {
+  const connection = ctx.get('connection')
+  assert.ok(connection, 'the smoke profile must mount the real connection service')
+  const url = new URL(connection.authenticatedUrl(ctx.get('webServer').getOrigin()))
+  url.pathname = '/connect'
+  url.searchParams.set('interactions', 'none')
+  const response = await fetch(url, { redirect: 'manual' })
+  const body = response.status === 302 ? '' : await response.text()
+  assert.equal(response.status, 302, `connect failed: ${response.status} ${body}`)
+  const setCookie = response.headers.getSetCookie?.()[0] ?? response.headers.get('set-cookie')
+  assert.ok(setCookie, 'connect must set a session cookie')
+  inspectorCookie = setCookie.split(';')[0]
+}
+
+/** Boot the profile with the scripted provider registered and an inspect cookie minted. */
 async function boot() {
   const booted = await runProfile({
     profile: 'it',
@@ -255,6 +332,7 @@ async function boot() {
     environment: appBoot.loadLayeredEnv('dsh'),
   })
   booted.ctx.llm.registerAdapter(['it-noop'], adapter)
+  await authenticateInspector(booted.ctx)
   return booted.ctx
 }
 
@@ -321,6 +399,15 @@ async function createPresetAgent(ctx, preset) {
   })
 }
 
+/** Poll a read-only condition; used when an event can be emitted before a waiter registers. */
+async function waitUntil(predicate, label, timeout = 20000) {
+  const deadline = Date.now() + timeout
+  while (!predicate()) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${label}`)
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20))
+  }
+}
+
 /** Run one ordinary turn and wait for its end event. */
 async function runTurn(agent, recorder, text, expected = 'completed') {
   const pending = recorder.waitFor((event) => event.type === 'turn/end', 'turn/end')
@@ -332,13 +419,17 @@ async function runTurn(agent, recorder, text, expected = 'completed') {
 }
 
 /** Read the inspect endpoint over the real Host webserver. */
-async function inspectHttp(ctx, sessionId) {
+async function inspectHttp(ctx, sessionId, options = {}) {
   const base = ctx.get('webServer').getOrigin()
   const suffix =
     sessionId === undefined
       ? ''
       : `?sessionId=${encodeURIComponent(sessionId)}`
-  const response = await fetch(`${base}/better-compact/api/inspect${suffix}`)
+  const cookie = options.cookie === undefined ? inspectorCookie : options.cookie
+  const response = await fetch(`${base}/better-compact/api/inspect${suffix}`, {
+    method: options.method ?? 'GET',
+    ...(cookie === null ? {} : { headers: { cookie } }),
+  })
   const text = await response.text()
   let json
   try {
@@ -406,6 +497,8 @@ try {
   assert.deepEqual(Object.keys(bare.json).sort(), [
     'activeConfig',
     'budget',
+    'engine',
+    'handoffContinuation',
     'lastCompaction',
     'preview',
     'requiresReload',
@@ -438,6 +531,9 @@ try {
 
   const previewBefore = (await inspectHttp(ctx, agentA.id)).json
   assert.equal(previewBefore.sessionId, agentA.id)
+  assert.equal(previewBefore.engine.owner, 'host')
+  assert.equal(previewBefore.engine.inspectApplies, true)
+  assert.equal(previewBefore.handoffContinuation, null)
   assert.equal(previewBefore.budget.retainTokens, 100)
   assert.equal(previewBefore.budget.contextWindow, 30000)
   assert.equal(previewBefore.budget.summaryMaxTokens, 100)
@@ -555,18 +651,23 @@ try {
   assert.equal(recD.count('compaction/start'), 0, 'a no-op writes no compaction events')
   check('manual-noop-reason')
 
-  // ── Inspect HTTP error contract ──────────────────────────────────────────
+  // ── Inspect HTTP auth and error contract ─────────────────────────────────
+  const unauthenticated = await inspectHttp(ctx, undefined, { cookie: null })
+  assert.ok([401, 403].includes(unauthenticated.response.status), String(unauthenticated.response.status))
+  assert.equal(unauthenticated.response.headers.get('cache-control'), 'no-store')
   const unknown = await inspectHttp(ctx, `missing-${randomUUID()}`)
   assert.equal(unknown.response.status, 404)
   assert.equal(unknown.response.headers.get('cache-control'), 'no-store')
   const base = ctx.get('webServer').getOrigin()
-  const bad = await fetch(`${base}/better-compact/api/inspect?bogus=1`)
+  const bad = await fetch(`${base}/better-compact/api/inspect?bogus=1`, {
+    headers: { cookie: inspectorCookie },
+  })
   assert.equal(bad.status, 400)
   assert.equal(bad.headers.get('cache-control'), 'no-store')
-  const post = await fetch(`${base}/better-compact/api/inspect`, { method: 'POST' })
-  assert.equal(post.status, 405)
-  assert.equal(post.headers.get('allow'), 'GET')
-  check('inspect-http-400-404-405-no-store')
+  const post = await inspectHttp(ctx, undefined, { method: 'POST' })
+  assert.equal(post.response.status, 405)
+  assert.equal(post.response.headers.get('allow'), 'GET')
+  check('inspect-http-401-400-404-405-no-store')
 
   // ── Settings save is volatile; the engine snapshot requires a reload ─────
   const row = (await ctx.settings.describe()).find((entry) => entry.ns === 'dsh-better-compact')
@@ -668,6 +769,20 @@ try {
   check('handoff-self-contained-checkpoint')
   check('handoff-single-same-session-continuation')
 
+  // Redaction must cover the visible summary, the persisted raw provider
+  // output, the replacement checkpoint and the file itself.
+  assert.equal(handoffDocument.includes(HANDOFF_SECRET), false, 'summary leaked the secret')
+  assert.equal(JSON.stringify(handoffSummary.data).includes(HANDOFF_SECRET), false, 'compaction/summary leaked the secret')
+  assert.equal(replacementText.includes(HANDOFF_SECRET), false, 'replacement checkpoint leaked the secret')
+  assert.equal((await readFile(path, 'utf8')).includes(HANDOFF_SECRET), false, 'handoff file leaked the secret')
+  const handoffInspect = (await inspectHttp(ctx, handoffAgent.id)).json
+  assert.equal(handoffInspect.engine.owner, 'host')
+  assert.equal(handoffInspect.handoffContinuation.status, 'scheduled')
+  assert.equal(handoffInspect.handoffContinuation.compactionId, handoffId)
+  assert.deepEqual(handoffInspect.handoffContinuation.blockers, [])
+  check('handoff-redaction-all-surfaces')
+  check('handoff-continuation-scheduled-visible')
+
   const handoffCall = llmState.compactionCalls.at(-1)
   const handoffInstruction = handoffCall.messages.at(-1).content[0].text
   assert.match(handoffInstruction, /Continue the file handoff/)
@@ -705,8 +820,229 @@ try {
   assert.equal(recP.count('turn/start'), pausedTurnsBefore, 'a paused goal must not be continued')
   assert.equal(ctx.goals.get(pausedAgent).phase, 'paused', 'the goal stays paused')
   assert.ok(summaryFor(recP, lastCompactionStart(recP).data.compactionId), 'the checkpoint is still committed')
+  const pausedInspect = (await inspectHttp(ctx, pausedAgent.id)).json
+  assert.equal(pausedInspect.handoffContinuation.status, 'skipped')
+  assert.match(pausedInspect.handoffContinuation.blockers.join('; '), /goal is paused/)
   check('paused-goal-blocks-continuation')
+  check('handoff-continuation-skipped-visible')
   recP.dispose()
+
+  // ── Real standard-preset session: a foreign native compaction engine ─────
+  const standardPresets = await ctx.agentPresets.list()
+  assert.ok(standardPresets.some((entry) => entry.id === 'standard'), JSON.stringify(standardPresets))
+  llmState.summaryMode = 'native'
+  const standardAgent = await createPresetAgent(ctx, 'standard')
+  const recStd = record(ctx, standardAgent)
+  llmState.scripted = [() => 's'.repeat(900), () => 's'.repeat(900), () => 's'.repeat(900)]
+  await runTurn(standardAgent, recStd, 'seed standard session')
+  await runTurn(standardAgent, recStd, 'standard history one')
+  await runTurn(standardAgent, recStd, 'standard history two')
+  const standardEngine = ctx.agentPresets.serviceFor(standardAgent, 'compaction')
+  assert.ok(standardEngine, 'the standard preset provides its own native engine')
+  assert.notEqual(standardEngine, ctx.compaction)
+  const standardCompact = await ctx.commands.execute(
+    standardAgent,
+    '/compact',
+    [],
+    new AbortController().signal,
+  )
+  assert.equal(standardCompact.result.kind, 'success', JSON.stringify(standardCompact))
+  const standardStart = lastCompactionStart(recStd)
+  assert.ok(summaryFor(recStd, standardStart.data.compactionId))
+  const standardInspect = (await inspectHttp(ctx, standardAgent.id)).json
+  assert.equal(standardInspect.engine.owner, 'foreign-preset')
+  assert.equal(standardInspect.engine.inspectApplies, false)
+  assert.match(standardInspect.engine.reason, /different compaction engine/)
+  assert.equal(standardInspect.budget, null)
+  assert.equal(standardInspect.preview, null)
+  assert.equal(standardInspect.lastCompaction.status, 'completed')
+  assert.equal(standardInspect.lastCompaction.mode, 'native')
+  assert.equal(standardInspect.handoffContinuation, null)
+  check('standard-preset-inspect-foreign-engine')
+  recStd.dispose()
+  llmState.summaryMode = 'handoff'
+
+  // ── Persistence (flush) failure surfaces as persistence-error ────────────
+  let failFlushFor = null
+  const offFlush = ctx.on('session/flush', (session) => {
+    if (session.id !== failFlushFor) return
+    // The checkpoint policy flushes before model calls too. The compaction's
+    // durability checkpoint is the flush whose newest event is compaction/end.
+    const latest = session.eventAt(session.seq - 1)
+    if (latest?.type !== 'compaction/end') return
+    throw new Error('simulated durability flush failure')
+  })
+  const flushAgent = await createHostAgent(ctx)
+  const recFlush = record(ctx, flushAgent)
+  llmState.scripted = [() => 'f'.repeat(900), () => 'f'.repeat(900), () => 'f'.repeat(900)]
+  await runTurn(flushAgent, recFlush, 'seed flush session')
+  await runTurn(flushAgent, recFlush, 'flush history one')
+  await runTurn(flushAgent, recFlush, 'flush history two')
+  failFlushFor = flushAgent.id
+  const flushCompact = await ctx.commands.execute(flushAgent, '/compact', [], new AbortController().signal)
+  failFlushFor = null
+  assert.equal(flushCompact.result.kind, 'error', JSON.stringify(flushCompact))
+  assert.match(flushCompact.result.text, /could not be saved/)
+  const flushInspect = (await inspectHttp(ctx, flushAgent.id)).json
+  assert.equal(flushInspect.lastCompaction.status, 'persistence-error')
+  assert.match(flushInspect.lastCompaction.error, /simulated durability flush failure/)
+  check('manual-persistence-error')
+  offFlush()
+  recFlush.dispose()
+
+  // ── In-flight cancellation ────────────────────────────────────────────────
+  const cancelAgent = await createHostAgent(ctx)
+  const recCancel = record(ctx, cancelAgent)
+  llmState.scripted = ['cancel seed']
+  await runTurn(cancelAgent, recCancel, 'seed cancellation session')
+  llmState.compactionBehavior = 'hang'
+  const cancelController = new AbortController()
+  const startSeen = recCancel.waitFor((event) => event.type === 'compaction/start', 'compaction/start')
+  const runningCompaction = ctx.commands.execute(
+    cancelAgent,
+    '/compact',
+    [],
+    cancelController.signal,
+  )
+  await startSeen
+  cancelController.abort()
+  // The command runtime races the handler against the caller signal, so an
+  // in-flight cancellation rejects with the abort reason (the command handler's
+  // own cancelled result is intentionally superseded by the host race).
+  await assert.rejects(runningCompaction, (error) => error?.name === 'AbortError' || /abort/i.test(error?.message ?? ''))
+  llmState.compactionBehavior = 'ok'
+  await cancelAgent.whenIdle()
+  const cancelInspect = (await inspectHttp(ctx, cancelAgent.id)).json
+  assert.equal(cancelInspect.lastCompaction.status, 'cancelled')
+  assert.match(cancelInspect.lastCompaction.error, /abort|cancel/i)
+  check('manual-in-flight-cancellation')
+  recCancel.dispose()
+
+  // ── Commit-stage failure that cannot append compaction/end ────────────────
+  const commitAgent = await createHostAgent(ctx)
+  const recCommit = record(ctx, commitAgent)
+  llmState.scripted = [() => 'c'.repeat(900), () => 'c'.repeat(900), () => 'c'.repeat(900)]
+  await runTurn(commitAgent, recCommit, 'seed commit session')
+  await runTurn(commitAgent, recCommit, 'commit history one')
+  await runTurn(commitAgent, recCommit, 'commit history two')
+  const realAppend = commitAgent.session.append.bind(commitAgent.session)
+  commitAgent.session.append = (type, data, options) => {
+    if (type === 'compaction/end') throw new Error('simulated end append failure')
+    return realAppend(type, data, options)
+  }
+  const commitResult = await ctx.commands.execute(commitAgent, '/compact', [], new AbortController().signal)
+  assert.equal(commitResult.result.kind, 'error', JSON.stringify(commitResult))
+  assert.match(commitResult.result.text, /did not finish cleanly/)
+  const commitInspect = (await inspectHttp(ctx, commitAgent.id)).json
+  assert.equal(commitInspect.lastCompaction.status, 'failed')
+  assert.match(commitInspect.lastCompaction.error, /simulated end append failure/)
+  check('manual-commit-append-failure')
+  commitAgent.session.append = realAppend
+  recCommit.dispose()
+
+  // ── Pending user question blocks continuation (real ask tool) ─────────────
+  const questionAgent = await createHostAgent(ctx)
+  assert.ok(ctx.tools.get('ask_user_question', questionAgent), 'host composition must expose the ask tool')
+  const recQuestion = record(ctx, questionAgent)
+  llmState.scripted = [
+    () => 'q'.repeat(900),
+    () => 'q'.repeat(900),
+    () => 'q'.repeat(900),
+    {
+      tool: 'ask_user_question',
+      arguments: {
+        questions: [{ id: 'smoke-question', question: 'Which provider should be used?' }],
+        timeout: 1,
+      },
+    },
+    { text: 'Waiting for the user.' },
+  ]
+  await runTurn(questionAgent, recQuestion, 'seed question session')
+  await runTurn(questionAgent, recQuestion, 'question history one')
+  await runTurn(questionAgent, recQuestion, 'question history two')
+  await runTurn(questionAgent, recQuestion, 'ask the pending question')
+  const pendingQuestions = ctx.sessionProjections.stateOf(questionAgent.session, 'userQuestions')
+  assert.ok(pendingQuestions.questions.active.length > 0, 'the timed ask must leave a pending question')
+  const questionTurnsBefore = recQuestion.count('turn/start')
+  const questionCompact = await ctx.commands.execute(questionAgent, '/compact', [], new AbortController().signal)
+  assert.equal(questionCompact.result.kind, 'success', JSON.stringify(questionCompact))
+  await questionAgent.whenIdle()
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
+  assert.equal(recQuestion.count('turn/start'), questionTurnsBefore, 'a pending question must not be continued')
+  const questionInspect = (await inspectHttp(ctx, questionAgent.id)).json
+  assert.equal(questionInspect.handoffContinuation.status, 'skipped')
+  assert.match(questionInspect.handoffContinuation.blockers.join('; '), /user question is still pending/)
+  check('pending-question-blocks-continuation')
+  recQuestion.dispose()
+
+  // ── Running job blocks continuation (real job registry) ──────────────────
+  const jobAgent = await createHostAgent(ctx)
+  const recJob = record(ctx, jobAgent)
+  llmState.scripted = [() => 'j'.repeat(900), () => 'j'.repeat(900), () => 'j'.repeat(900)]
+  await runTurn(jobAgent, recJob, 'seed job session')
+  await runTurn(jobAgent, recJob, 'job history one')
+  await runTurn(jobAgent, recJob, 'job history two')
+  let settleJob
+  const jobDone = new Promise((resolvePromise) => {
+    settleJob = resolvePromise
+  })
+  const jobId = ctx.jobs.start({
+    kind: 'smoke',
+    label: 'smoke background job',
+    owner: jobAgent.id,
+    run: () => ({
+      cancel: () => settleJob({ status: 'killed', detail: 'smoke cleanup' }),
+      done: jobDone,
+    }),
+  })
+  assert.ok(
+    ctx.jobs.list(jobAgent.id).some((job) => job.id === jobId && job.status === 'running'),
+  )
+  const jobCompact = await ctx.commands.execute(jobAgent, '/compact', [], new AbortController().signal)
+  assert.equal(jobCompact.result.kind, 'success', JSON.stringify(jobCompact))
+  await jobAgent.whenIdle()
+  const jobInspect = (await inspectHttp(ctx, jobAgent.id)).json
+  assert.equal(jobInspect.handoffContinuation.status, 'skipped')
+  assert.match(jobInspect.handoffContinuation.blockers.join('; '), /background job/)
+  check('running-job-blocks-continuation')
+  ctx.jobs.kill(jobId, jobAgent.id, 'smoke cleanup')
+  await jobDone
+  recJob.dispose()
+
+  // ── Running child agent blocks continuation (real AgentLoop) ─────────────
+  const parentAgent = await createHostAgent(ctx)
+  const recParent = record(ctx, parentAgent)
+  llmState.scripted = [() => 'r'.repeat(900), () => 'r'.repeat(900), () => 'r'.repeat(900)]
+  await runTurn(parentAgent, recParent, 'seed child-parent session')
+  await runTurn(parentAgent, recParent, 'child-parent history one')
+  await runTurn(parentAgent, recParent, 'child-parent history two')
+  const childCreated = await ctx.agents.create({
+    sessionId: randomUUID(),
+    parentAgent,
+    meta: { cwd: home, parentSession: parentAgent.id, origin: 'subagent', delegationDepth: 1 },
+    agentOptions: { provider: 'it-noop', model: 'noop' },
+    setup: async () => {},
+  })
+  const child = childCreated.agent
+  const recChild = record(ctx, child)
+  llmState.scripted = [{ hang: true }]
+  child.followup(createUserMessage({ content: textBlock('hold the child turn'), source: { kind: 'user' } }))
+  await waitUntil(
+    () => recChild.events.some((event) => event.type === 'turn/start'),
+    'child turn/start',
+  )
+  assert.equal(child.status, 'running')
+  const childCompact = await ctx.commands.execute(parentAgent, '/compact', [], new AbortController().signal)
+  assert.equal(childCompact.result.kind, 'success', JSON.stringify(childCompact))
+  await parentAgent.whenIdle()
+  const childInspect = (await inspectHttp(ctx, parentAgent.id)).json
+  assert.equal(childInspect.handoffContinuation.status, 'skipped')
+  assert.match(childInspect.handoffContinuation.blockers.join('; '), /child agent is still running/)
+  check('running-child-blocks-continuation')
+  child.cancel({ kind: 'user' })
+  await child.whenIdle()
+  recChild.dispose()
+  await childCreated.dispose()
 
   // Re-enable auto for the next boot; saving is still reload-gated.
   const autoRow = (await ctx.settings.describe()).find((entry) => entry.ns === 'dsh-better-compact')
