@@ -1,0 +1,45 @@
+# Third-party notices
+
+`dsh-better-compact` is licensed GPL-3.0-or-later (see `LICENSE`). It adapts
+small, substantive parts of the MIT-licensed DeepSeek Harness packages; those
+parts remain available under the MIT license reproduced in
+`third-party/LICENSE-MIT-dsh`.
+
+## DeepSeek Harness (`@deepseek-ai/*`, MIT, Copyright (c) 2026 DeepSeek)
+
+The following adapted material is derived from the installed DSH 0.2.1-rc.2
+package `@deepseek-ai/dsh-compaction-basic` (and, for the preset copy,
+`@deepseek-ai/dsh-web-app`):
+
+- `src/budget.js` — the pressure/threshold/retention formulas from
+  `resolveCompactSpec` and the specification/selection rules from
+  `resolveTargetPolicy` and `selectCompactableRange`. The DSH build is bundled;
+  these functions are not exported from the package, so the formulas are
+  re-implemented in one clearly marked adapter module and must stay
+  behavior-compatible with the native engine. Changed: TypeScript types were
+  dropped, diagnostics were reworded, and the functions take detached plain
+  configuration.
+- `src/engine.js` — the shape of the one-shot summarization request (replayed
+  prefix, final user instruction, `purpose: 'compaction'`, assembler and
+  fail-closed finish mapping) follows `summarizeWithLlm` / `summarizeCompaction`
+  so goal and handoff summaries reuse the native warm prefix instead of copying
+  the whole native engine. Changed: the instruction text and structured output
+  are new; reasoning-effort/cache-priority handling and output structure
+  validation are added.
+- `presets/better-compact.patch.yml` — a verbatim copy of
+  `@deepseek-ai/dsh-web-app@0.2.1-rc.2` `presets/standard.patch.yml` with exactly
+  one row (`compaction-basic` → `dsh-better-compact/engine`) and the preset
+  identity/metadata changed. The original copyright and MIT license apply.
+
+The native checkpoint preamble and `<compacted-summary>` framing are *not*
+copied: native mode calls the inherited `summarize()` implementation, so the
+installed host remains their only source.
+
+## Design references (no source copied)
+
+The goal/handoff prompt structure and the inspection contract were informed by
+the public design documents and by fixed-version review of MIT/Apache-2.0
+projects (pi-atlas, xbot, OpenCode V2, Codex). No substantial source code or
+prompt text from those projects is included here; they are research references,
+not runtime dependencies, and this repository does not claim their quality or
+behavior.

@@ -1,0 +1,33 @@
+# Standalone dsh-better-compact bundle patch.
+#
+# One package, two rows, one engine realm each:
+#
+#   * `dsh-better-compact` is the HOST COMPANION row: it owns the volatile
+#     configuration schema, the load-time frozen snapshot service
+#     (`betterCompactConfig`), the read-only GET inspect route, and the browser
+#     module entry. It never registers a compaction service.
+#   * `dsh-better-compact-engine` is the ENGINE row used by profiles with no
+#     agent presets (headless/TUI, or any composition that keeps the host-plane
+#     agent plane). Web sessions get their own engine from the
+#     `better-compact` agent preset below.
+#
+# The host Basic engine is disabled here. In the shipped Web composition it is
+# already disabled by `@deepseek-ai/dsh-web-app/cordis.patch.yml` and mounted
+# inside each preset; that patch cannot address preset-internal rows, which is
+# why the `better-compact` preset below carries its own engine copy instead of
+# trying to reconfigure the shipped presets.
+#
+# `command-compact` and `tool-result-pruner` are deliberately not touched:
+# headless keeps the base rows, and the Web composition keeps them inside each
+# preset's isolated group. A session that selects another preset keeps that
+# preset's compaction engine; the host-plane engine below detects a
+# preset-owned `compaction` service and stays out of the way.
+- id: compaction-basic
+  disabled: true
+
+- insert:
+    - id: dsh-better-compact
+      name: dsh-better-compact
+
+    - id: dsh-better-compact-engine
+      name: dsh-better-compact/engine

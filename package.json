@@ -1,0 +1,91 @@
+{
+  "name": "dsh-better-compact",
+  "version": "0.1.0",
+  "description": "Independent DSH compaction plugin: native, goal-aware, and file-handoff checkpoints with a read-only inspect API.",
+  "license": "GPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Menghuan1918/dsh-better-compact.git"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./engine": "./src/engine.js",
+    "./client": "./src/client.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0",
+    "dsh": ">=0.2.1-rc.2 <0.3.0"
+  },
+  "scripts": {
+    "test": "node --test",
+    "smoke": "node scripts/runtime-smoke.mjs"
+  },
+  "files": [
+    "src",
+    "presets",
+    "docs",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "third-party"
+  ],
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.18.5"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-agent": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-agent-preset": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-compaction": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-compaction-basic": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-llm": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-session": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-session-projection": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-session-query": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-token-meter": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-web-server": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/dsh-client-connection": ">=0.2.1-rc.2 <0.3.0",
+    "react": "^18.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-web-server": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-connection": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-query": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-session-projection": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "js-yaml": "^4.2.0",
+    "react": "18.3.1",
+    "react-test-renderer": "18.3.1"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": [
+        "./cordis.patch.yml",
+        "./presets/better-compact.patch.yml"
+      ]
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ]
+    }
+  }
+}
