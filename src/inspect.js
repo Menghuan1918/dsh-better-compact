@@ -279,10 +279,18 @@ export function buildBudgetPreview(input) {
     }
   }
   const afterUpperBoundTokens = (budget.fixedTokens ?? 0) + tailTokens + spec.maxTokens
-  const reason =
+  const belowTrigger =
     measurement.totalTokens >= spec.thresholdTokens
       ? null
       : `current ${measurement.totalTokens} tokens are below the automatic trigger ${spec.thresholdTokens}; this is the candidate range, not a running compaction`
+  const autoDisabled =
+    activeConfig.auto === false
+      ? 'automatic compaction is disabled (auto=false); this preview is informational only'
+      : null
+  const reason =
+    belowTrigger === null && autoDisabled === null
+      ? null
+      : [belowTrigger, autoDisabled].filter((part) => part !== null).join('; ')
   return {
     budget,
     preview: {

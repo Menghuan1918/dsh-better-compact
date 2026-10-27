@@ -236,6 +236,17 @@ test('buildBudgetPreview reports threshold, retain, fixed prefix and a below-tri
   // fixed 10 + tail node3 100 + maxTokens 50
   assert.equal(preview.afterUpperBoundTokens, 160)
   assert.match(preview.reason, /below the automatic trigger 500/)
+
+  const disabled = buildBudgetPreview({
+    ctx: fakeBudgetCtx(measurement, info),
+    session,
+    events,
+    activeConfig: normalized({ auto: false }),
+    measurement,
+    modelInfo: info,
+  })
+  assert.match(disabled.preview.reason, /automatic compaction is disabled \(auto=false\)/)
+  assert.match(disabled.preview.reason, /below the automatic trigger/)
 })
 
 test('buildBudgetPreview reports unknown capacity and no safe range without inventing numbers', () => {

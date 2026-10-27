@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { rm, readFile } from 'node:fs/promises'
 import { Context } from '@deepseek-ai/cordis'
+import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { GOAL_SECTIONS, HANDOFF_SECTIONS, HANDOFF_TITLE } from '../src/prompts.js'
 import { readConfig } from '../src/config.js'
 import { resetLiveRegistry } from '../src/live.js'
@@ -101,10 +102,17 @@ test('native mode delegates to the inherited native summarizer', async () => {
   resetLiveRegistry()
   const calls = []
   const llm = { stream: (options) => { calls.push(options); return streamOf('native summary')() } }
+  const original = BasicCompactionEngine.prototype.summarize
+  let inherited = 0
+  BasicCompactionEngine.prototype.summarize = async function (...args) {
+    inherited += 1
+    return original.apply(this, args)
+  }
   const { engine, dispose } = await makeEngine(normalized({ mode: 'native' }), { llm })
   try {
     const agent = fakeAgent()
     const result = await engine.summarize({ messages: [{ role: 'system', content: text('sys') }] }, agent)
+    assert.equal(inherited, 1, 'native mode must call the inherited summarize implementation')
     assert.equal(calls.length, 1)
     assert.equal(result.llmStreamCall, true)
     assert.equal(result.summary[0].text, 'native summary')
@@ -114,6 +122,7 @@ test('native mode delegates to the inherited native summarizer', async () => {
     assert.equal(calls[0].maxTokens, 50)
     assert.equal('reasoningEffort' in calls[0], false)
   } finally {
+    BasicCompactionEngine.prototype.summarize = original
     await dispose()
   }
 })
