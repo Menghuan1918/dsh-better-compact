@@ -115,20 +115,30 @@ test('toNativeConfig strips enhanced-only keys and keeps native meanings', () =>
 })
 
 test('the Config schema rejects exclusive ratio boundaries before readConfig runs', () => {
-  assert.throws(() => Config({ thresholdRatio: 0 }), /ratio must be a number in \(0, 1\)/)
-  assert.throws(() => Config({ thresholdRatio: 1 }), /ratio must be a number in \(0, 1\)/)
-  assert.throws(() => Config({ retainRatio: 0 }), /ratio must be a number in \(0, 1\)/)
-  assert.throws(() => Config({ retainRatio: 1 }), /ratio must be a number in \(0, 1\)/)
-  assert.throws(
-    () => Config({ modelPolicies: [{ provider: 'p', model: 'm', retainRatio: 0 }] }),
-    /ratio must be a number in \(0, 1\)/,
-  )
-  assert.throws(
-    () => Config({ modelPolicies: [{ provider: 'p', model: 'm', thresholdRatio: 1 }] }),
-    /ratio must be a number in \(0, 1\)/,
-  )
+  assert.throws(() => Config({ thresholdRatio: 0 }))
+  assert.throws(() => Config({ thresholdRatio: 1 }))
+  assert.throws(() => Config({ retainRatio: 0 }))
+  assert.throws(() => Config({ retainRatio: 1 }))
+  assert.throws(() => Config({ modelPolicies: [{ provider: 'p', model: 'm', retainRatio: 0 }] }))
+  assert.throws(() => Config({ modelPolicies: [{ provider: 'p', model: 'm', thresholdRatio: 1 }] }))
   const parsed = Config({})
   assert.equal(parsed.thresholdRatio.get(), 0.8)
+})
+
+test('the Config schema is Web-client rehydratable and contains no transform node', () => {
+  // The Web settings client rehydrates the wire schema without transform
+  // callbacks; a transform node leaves the row form stuck on "Reading
+  // configuration…". Keep every node a plain schemastery type.
+  const json = Config.toJSON()
+  const visit = (node) => {
+    if (node === null || typeof node !== 'object') return false
+    if (node.type === 'transform') return true
+    if (Array.isArray(node.list) && node.list.some(visit)) return true
+    if (node.dict && Object.values(node.dict).some(visit)) return true
+    return false
+  }
+  const roots = [json, ...Object.values(json.refs ?? {})]
+  assert.equal(roots.some(visit), false, 'Config schema must not contain transform nodes')
 })
 
 test('unknown top-level and policy keys are rejected with actionable messages', () => {

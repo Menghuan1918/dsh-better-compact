@@ -104,23 +104,18 @@ export const DEFAULTS = Object.freeze({
 })
 
 /**
- * A ratio strictly inside `(0, 1)`.
+ * A ratio inside `(0, 1)`, expressed with plain leaf bounds.
  *
  * The spec requires positive values below 1 for both the trigger and the
- * retention fraction. Schemastery's `.min/.max` are inclusive, so a tiny
- * transform carries the exclusive bound; keeping it on the leaf preserves the
- * per-field `.volatile()` form the settings service reads.
+ * retention fraction. A transform node would enforce that exactly, but the
+ * Web settings client rehydrates the serialized schema without the transform
+ * callback; the row form then fails to decode and stays on "Reading
+ * configuration…". Keep the schema plain and rehydratable: the one-step
+ * representable range rejects 0 and 1, and {@link readConfig} still enforces
+ * the exact exclusive check with an actionable message at load time.
  */
 function ratioSchema(defaultValue) {
-  const schema = z.transform(
-    z.number(),
-    (value, options) => {
-      if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value >= 1) {
-        throw new z.ValidationError(`ratio must be a number in (0, 1), got ${String(value)}`, options ?? {})
-      }
-      return value
-    },
-  )
+  const schema = z.number().min(Number.MIN_VALUE).max(1 - Number.EPSILON)
   return defaultValue === undefined ? schema : schema.default(defaultValue)
 }
 
@@ -145,10 +140,11 @@ const modelPolicySchema = z.object({
  * Per-field constraints are real: ranges, integer steps, enum membership.
  * Cross-field constraints (mutually exclusive retention, summarization pair,
  * retention below threshold) are enforced by {@link readConfig} because
- * schemastery object schemas have no sibling-field validator, and a transform
- * wrapper cannot carry per-field `.volatile()` references. They therefore fail
- * at plugin load/reload with an actionable message, and the S3 form validates
- * them before a save is attempted.
+ * schemastery object schemas have no sibling-field validator; they fail at
+ * plugin load/reload with an actionable message, and the S3 form validates
+ * them before a save is attempted. Keep every node rehydratable by the Web
+ * settings client: a transform node loses its callback in the wire schema and
+ * leaves the row form stuck on "Reading configuration…".
  */
 export const Config = z.object({
   mode: z.union([...MODES]).default(DEFAULTS.mode).volatile(),

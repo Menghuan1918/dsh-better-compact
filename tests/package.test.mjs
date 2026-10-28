@@ -22,7 +22,7 @@ const preset = loadPatch(new URL('presets/better-compact.patch.yml', root))
 
 test('package metadata matches the published contract', () => {
   assert.equal(pkg.name, 'dsh-better-compact')
-  assert.equal(pkg.version, '0.1.0')
+  assert.equal(pkg.version, '0.1.1')
   assert.equal(pkg.license, 'GPL-3.0-or-later')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.repository.url, 'git+https://github.com/Menghuan1918/dsh-better-compact.git')

@@ -6,7 +6,7 @@ adds two continuation-oriented summarization modes: **goal** (default) and
 inspect/models API. It does not need Apollo, a second history database, or a
 custom write API.
 
-- Package: `dsh-better-compact` `0.1.0`
+- Package: `dsh-better-compact` `0.1.1`
 - License: GPL-3.0-or-later (adapted DSH material remains MIT; see
   [third-party/NOTICE](third-party/NOTICE))
 - Host baseline: DSH `>=0.2.1-rc.2 <0.3.0` (`0.2.1-rc.2` is the verified build)
@@ -36,7 +36,7 @@ creates a new session, answers a pending question, or changes goal state.
 Standalone (no Apollo):
 
 ```sh
-dsh plugin --profile <profile> add dsh-better-compact@0.1.0
+dsh plugin --profile <profile> add dsh-better-compact@0.1.1
 ```
 
 From GitHub main (secondary entry point):

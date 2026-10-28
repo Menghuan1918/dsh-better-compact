@@ -7,7 +7,7 @@ commits, docs, or the npm package.
 
 ## Status and compatibility
 
-- Package version: `0.1.0`.
+- Package version: `0.1.1`.
 - Verified DSH build: `0.2.1-rc.2`; `engines.dsh` is
   `>=0.2.1-rc.2 <0.3.0`. That range admits later RCs but is not a per-version
   verification promise.
