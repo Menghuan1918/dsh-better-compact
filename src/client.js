@@ -44,31 +44,31 @@ window.__ModuleLoader__.load({
     const MODES = Object.freeze(['native', 'goal', 'handoff'])
     const MODE_META = Object.freeze({
       native: Object.freeze({
-        label: 'DSH native',
-        description: 'Inherited native summarizer and native checkpoint. No goal read, no handoff file.',
-        caption: 'The native implementation chooses its own summary request shape; enhanced effort and cache controls are not applicable.',
+        label: 'DSH 原生',
+        description: '原生摘要与 checkpoint；近期原文保留。',
+        caption: '原生决定摘要请求；增强 effort / 缓存项不适用。',
       }),
       goal: Object.freeze({
-        label: 'Goal-enhanced',
-        badge: 'Default',
-        description: 'Adds the current authoritative goal/todo as read-only input to a continuation-oriented summary. It never takes over the goal lifecycle.',
-        caption: 'Runs with or without a goal. Authority state is an extra input; it is not modified, resumed, or marked complete.',
+        label: 'Goal 增强',
+        badge: '默认',
+        description: '结合权威 Goal / Todo 生成交接摘要，不接管目标。',
+        caption: '无 Goal 也可运行；只读目标，不修改轮次或完成状态。',
       }),
       handoff: Object.freeze({
-        label: 'File handoff',
+        label: '文件 Handoff',
         badge: null,
-        description: 'Writes this attempt’s temporary Markdown handoff file, stores the same body in native events, then may continue the same session.',
-        caption: 'No new session and no handoff history database. The file is a convenience copy, not the only recovery source.',
+        description: '临时文件交接，正文入原生记录，可在同会话继续。',
+        caption: '不新建会话或历史库；文件不是唯一恢复来源。',
       }),
     })
     /** One-line summary used by the Plugins page before opening the row. */
     const SUMMARY =
-      'Native, goal-aware, or file-handoff compaction checkpoints with a read-only inspect API.'
+      '原生 / Goal 增强 / 文件 Handoff 压缩，附只读诊断。'
     /** Strategy disclaimer required on the mode cards. */
     const STRATEGY_NOTE =
-      'Strategy schematic, not a live token flow or cache hit rate. Diagrams explain when each strategy reads or retains content; they do not report measured tokens or cache savings.'
+      '策略示意，非实时 token 流或缓存命中率。'
     /** Native-mode applicability copy required by the spec. */
-    const NATIVE_NOT_APPLICABLE = 'not applicable: the native implementation decides'
+    const NATIVE_NOT_APPLICABLE = '不适用：由原生实现决定'
     /** Exact cache-priority copy required by the spec. */
     const CACHE_PRIORITY_COPY = '优先复用缓存（尽可能保留 KV Cache 前缀）'
     /** Empty session-list snapshot (stable identity for useSyncExternalStore). */
@@ -188,7 +188,7 @@ window.__ModuleLoader__.load({
     function validateDraft(draft) {
       const errors = []
       if (!MODES.includes(draft.mode)) {
-        errors.push({ field: 'mode', message: 'Select one of the three compaction modes.' })
+        errors.push({ field: 'mode', message: '请选择一种压缩模式。' })
       }
 
       const thresholdRatio = parseNumberInput(draft.thresholdRatio)
@@ -198,33 +198,33 @@ window.__ModuleLoader__.load({
         thresholdRatio > 0 &&
         thresholdRatio < 1
       if (!thresholdValid) {
-        errors.push({ field: 'thresholdRatio', message: 'Threshold ratio must be a number between 0 and 1 (exclusive).' })
+        errors.push({ field: 'thresholdRatio', message: '自动压缩阈值（thresholdRatio）必须大于 0 且小于 1。' })
       }
 
       const headroom = parseIntegerInput(draft.headroomTokens)
       const headroomValid = headroom !== null && !Number.isNaN(headroom) && headroom >= 0
       if (!headroomValid) {
-        errors.push({ field: 'headroomTokens', message: 'Headroom tokens must be an integer of 0 or more.' })
+        errors.push({ field: 'headroomTokens', message: '额外预留（headroomTokens）必须为非负整数。' })
       }
 
       if (draft.retainMode === 'tokens') {
         const retainTokens = parseIntegerInput(draft.retainTokens)
         if (retainTokens === null || Number.isNaN(retainTokens) || retainTokens < 0) {
-          errors.push({ field: 'retainTokens', message: 'Retention tokens must be an integer of 0 or more.' })
+          errors.push({ field: 'retainTokens', message: '保留 token 数必须为非负整数。' })
         }
       } else if (draft.retainRatio !== '') {
         const retainRatio = parseNumberInput(draft.retainRatio)
         if (retainRatio === null || Number.isNaN(retainRatio) || retainRatio <= 0 || retainRatio >= 1) {
-          errors.push({ field: 'retainRatio', message: 'Retention ratio must be a number between 0 and 1 (exclusive).' })
+          errors.push({ field: 'retainRatio', message: '保留比例必须大于 0 且小于 1。' })
         } else if (thresholdValid && retainRatio >= thresholdRatio) {
-          errors.push({ field: 'retainRatio', message: 'Retention ratio must be lower than the threshold ratio.' })
+          errors.push({ field: 'retainRatio', message: '保留比例必须低于自动压缩阈值。' })
         }
       }
 
       if ((draft.provider === '') !== (draft.model === '')) {
         errors.push({
           field: 'summarizationModel',
-          message: 'Summary provider and model must be set together, or both left empty to follow the session.',
+          message: '摘要 provider / model 必须成对填写，或同时留空以跟随会话。',
         })
       }
 
@@ -232,23 +232,23 @@ window.__ModuleLoader__.load({
         if (headroom === 0) {
           errors.push({
             field: 'maxTokens',
-            message: 'Max tokens is required when headroom tokens is 0: the native engine needs a positive summary output cap.',
+            message: 'headroomTokens 为 0 时必须填写 maxTokens：原生引擎需要正数摘要输出上限。',
           })
         }
       } else {
         const maxTokens = parseIntegerInput(draft.maxTokens)
         if (maxTokens === null || Number.isNaN(maxTokens) || maxTokens <= 0) {
-          errors.push({ field: 'maxTokens', message: 'Max tokens must be a positive integer.' })
+          errors.push({ field: 'maxTokens', message: '摘要输出上限（maxTokens）必须为正整数。' })
         }
       }
 
       const compactionRetries = parseIntegerInput(draft.compactionRetries)
       if (compactionRetries === null || Number.isNaN(compactionRetries) || compactionRetries < 0) {
-        errors.push({ field: 'compactionRetries', message: 'Compaction retries must be an integer of 0 or more.' })
+        errors.push({ field: 'compactionRetries', message: '压力残留重试（compactionRetries）必须为非负整数。' })
       }
       const maxOverflowRetries = parseIntegerInput(draft.maxOverflowRetries)
       if (maxOverflowRetries === null || Number.isNaN(maxOverflowRetries) || maxOverflowRetries < 0) {
-        errors.push({ field: 'maxOverflowRetries', message: 'Max overflow retries must be an integer of 0 or more.' })
+        errors.push({ field: 'maxOverflowRetries', message: '超限恢复次数（maxOverflowRetries）必须为非负整数。' })
       }
       return errors
     }
@@ -269,8 +269,8 @@ window.__ModuleLoader__.load({
           {
             field: 'reasoningEffort',
             message:
-              `Reasoning effort "${draft.effort}" is not advertised by ${draft.provider}/${draft.model}. ` +
-              'Choose an advertised effort or clear the field to use the model default.',
+              `模型 ${draft.provider}/${draft.model} 未声明支持思考强度 "${draft.effort}"。` +
+              '请选择支持的强度，或明确清空以使用摘要模型默认值。',
           },
         ]
       }
@@ -282,9 +282,9 @@ window.__ModuleLoader__.load({
       if (draft.provider === '' || draft.model === '' || !routesKnown) return null
       if (routes.some((entry) => entry.provider === draft.provider && entry.model === draft.model)) return null
       return (
-        `Summary route "${draft.provider}/${draft.model}" is not in the host’s allowed candidate list. ` +
-        'The saved value is kept: the candidate list is host metadata, not a hard restriction on the summary route. ' +
-        'Verify that this route is usable for the current session, choose a listed route, or clear both fields to follow the session.'
+        `摘要路由 "${draft.provider}/${draft.model}" 不在宿主候选列表中。` +
+        '当前值已保留；候选列表仅为宿主元数据，不是摘要路由的硬限制。' +
+        '请确认当前会话能使用此路由、选择候选，或清空两项以跟随会话。'
       )
     }
 
@@ -467,104 +467,78 @@ window.__ModuleLoader__.load({
 
     // ── strategy diagrams (one distinct drawing per mode) ─────────────────
 
-    /** Traditional native compaction: earlier history becomes the native summary. */
+    // Shared SVG primitives keep arrow tips on node boundaries, not near them.
+    function DiagramNode(props) {
+      const { id, x, y, width, height, lines, tone = '' } = props
+      return h('g', null,
+        h('rect', { 'data-node': id, className: 'dsh-bc-node ' + tone, x, y, width, height, rx: 4 }),
+        lines.map((line, index) => h('text', {
+          key: index, x: x + width / 2, y: y + height / 2 + 4 + (index - (lines.length - 1) / 2) * 14,
+          textAnchor: 'middle',
+        }, line)),
+      )
+    }
+
+    function DiagramEdge(props) {
+      return h('path', { className: 'dsh-bc-edge', 'data-from': props.from, 'data-to': props.to,
+        d: props.d, markerEnd: 'url(#' + props.marker + ')' })
+    }
+
+    function StrategySvg(props) {
+      return h('svg', { className: 'dsh-bc-diagram', viewBox: '0 0 180 170', role: 'img',
+        'data-diagram': props.mode, 'aria-label': props.label },
+        h('title', null, props.label),
+        h('defs', null, h('marker', { id: props.marker, viewBox: '0 0 6 6', refX: 6, refY: 3,
+          markerWidth: 6, markerHeight: 6, orient: 'auto', markerUnits: 'userSpaceOnUse' },
+          h('path', { d: 'M0 0 L6 3 L0 6 Z', fill: 'currentColor' }))),
+        h(DiagramNode, { id: 'fixed', x: 2, y: 2, width: 176, height: 22, lines: ['固定提示 / 工具前缀'], tone: 'dsh-bc-node-dashed' }),
+        props.children,
+      )
+    }
+
     function NativeDiagram() {
-      return h(
-        'svg',
-        {
-          className: 'dsh-bc-diagram',
-          viewBox: '0 0 260 148',
-          role: 'img',
-          'data-diagram': 'native',
-          'aria-label':
-            'DSH native strategy. Earlier history goes through the native summarizer into a native summary. Recent verbatim messages are retained in the native tail. The result is a native checkpoint stored as native events.',
-        },
-        h('title', null, 'DSH native compaction strategy'),
-        h('rect', { className: 'dsh-bc-node', x: 4, y: 8, width: 108, height: 30, rx: 5 }),
-        h('text', { x: 58, y: 27, textAnchor: 'middle' }, 'earlier history'),
-        h('rect', { className: 'dsh-bc-node', x: 148, y: 8, width: 108, height: 30, rx: 5 }),
-        h('text', { x: 202, y: 27, textAnchor: 'middle' }, 'recent verbatim'),
-        h('path', { className: 'dsh-bc-edge', d: 'M58 38v14m-4-5 4 5 4-5' }),
-        h('text', { className: 'dsh-bc-diagram-note', x: 64, y: 52 }, 'native summarizer'),
-        h('path', { className: 'dsh-bc-edge', d: 'M202 38v14m-4-5 4 5 4-5' }),
-        h('text', { className: 'dsh-bc-diagram-note', x: 208, y: 52 }, 'native tail'),
-        h('rect', { className: 'dsh-bc-node dsh-bc-node-accent', x: 4, y: 60, width: 108, height: 30, rx: 5 }),
-        h('text', { x: 58, y: 79, textAnchor: 'middle' }, 'native summary'),
-        h('rect', { className: 'dsh-bc-node dsh-bc-node-strong', x: 148, y: 60, width: 108, height: 30, rx: 5 }),
-        h('text', { x: 202, y: 79, textAnchor: 'middle' }, 'retained verbatim'),
-        h('path', { className: 'dsh-bc-edge', d: 'M58 90v12h72' }),
-        h('path', { className: 'dsh-bc-edge', d: 'M136 102h72v-12' }),
-        h('rect', { className: 'dsh-bc-node dsh-bc-node-accent', x: 4, y: 106, width: 252, height: 26, rx: 5 }),
-        h('text', { x: 130, y: 123, textAnchor: 'middle' }, 'native checkpoint · native start → summary → replacement → end'),
-        h('text', { className: 'dsh-bc-diagram-note', x: 130, y: 143, textAnchor: 'middle' }, 'native semantics are inherited; no goal read, no temp file'),
+      const marker = 'bc-native-' + useId().replace(/[^a-zA-Z0-9_-]/g, '')
+      return h(StrategySvg, { mode: 'native', marker,
+        label: 'DSH 原生：较早历史经原生压缩生成原生摘要，近期原文保留，组成原生 checkpoint；固定提示与工具前缀独立。' },
+        h(DiagramNode, { id: 'history', x: 2, y: 38, width: 96, height: 28, lines: ['较早历史'] }),
+        h(DiagramNode, { id: 'recent', x: 108, y: 38, width: 70, height: 28, lines: ['近期原文'] }),
+        h(DiagramEdge, { from: 'history', to: 'summary', d: 'M50 66 L50 96', marker }),
+        h(DiagramEdge, { from: 'recent', to: 'tail', d: 'M143 66 L143 96', marker }),
+        h('text', { x: 6, y: 85 }, '原生压缩'),
+        h(DiagramNode, { id: 'summary', x: 2, y: 96, width: 96, height: 28, lines: ['原生摘要'], tone: 'dsh-bc-node-accent' }),
+        h(DiagramNode, { id: 'tail', x: 108, y: 96, width: 70, height: 28, lines: ['原文保留'], tone: 'dsh-bc-node-strong' }),
+        h(DiagramEdge, { from: 'summary', to: 'checkpoint', d: 'M50 124 L50 144', marker }),
+        h(DiagramEdge, { from: 'tail', to: 'checkpoint', d: 'M143 124 L143 144', marker }),
+        h(DiagramNode, { id: 'checkpoint', x: 2, y: 144, width: 176, height: 24, lines: ['原生 checkpoint'] }),
       )
     }
 
-    /** Goal-enhanced compaction: authoritative state is an additional input. */
     function GoalDiagram() {
-      return h(
-        'svg',
-        {
-          className: 'dsh-bc-diagram',
-          viewBox: '0 0 260 148',
-          role: 'img',
-          'data-diagram': 'goal',
-          'aria-label':
-            'Goal-enhanced strategy. Earlier history and the external authoritative goal and todo are combined into a goal, constraints, progress and next-step summary. Recent verbatim messages stay retained. The goal is read-only: it is not resumed, completed, or reset.',
-        },
-        h('title', null, 'Goal-enhanced compaction strategy'),
-        h('rect', { className: 'dsh-bc-node', x: 4, y: 8, width: 96, height: 30, rx: 5 }),
-        h('text', { x: 52, y: 27, textAnchor: 'middle' }, 'earlier history'),
-        h('rect', { className: 'dsh-bc-node dsh-bc-node-dashed', x: 112, y: 8, width: 144, height: 30, rx: 5 }),
-        h('text', { x: 184, y: 23, textAnchor: 'middle' }, 'authoritative goal / todo'),
-        h('text', { className: 'dsh-bc-diagram-note', x: 184, y: 34, textAnchor: 'middle' }, 'read-only input, not owned'),
-        h('path', { className: 'dsh-bc-edge', d: 'M52 38v12h78' }),
-        h('path', { className: 'dsh-bc-edge', d: 'M184 38v12h-54' }),
-        h('rect', { className: 'dsh-bc-node dsh-bc-node-accent', x: 4, y: 58, width: 160, height: 34, rx: 5 }),
-        h('text', { x: 84, y: 72, textAnchor: 'middle' }, 'goal · constraints · progress'),
-        h('text', { x: 84, y: 85, textAnchor: 'middle' }, 'next step · exact references'),
-        h('rect', { className: 'dsh-bc-node dsh-bc-node-strong', x: 176, y: 58, width: 80, height: 34, rx: 5 }),
-        h('text', { x: 216, y: 72, textAnchor: 'middle' }, 'recent'),
-        h('text', { x: 216, y: 85, textAnchor: 'middle' }, 'verbatim'),
-        h('text', { className: 'dsh-bc-diagram-note', x: 216, y: 100, textAnchor: 'middle' }, 'retained verbatim'),
-        h('path', { className: 'dsh-bc-edge', d: 'M84 92v14h52' }),
-        h('rect', { className: 'dsh-bc-node dsh-bc-node-accent', x: 4, y: 110, width: 160, height: 24, rx: 5 }),
-        h('text', { x: 84, y: 126, textAnchor: 'middle' }, 'native checkpoint replacement'),
-        h('text', { className: 'dsh-bc-diagram-note', x: 130, y: 145, textAnchor: 'middle' }, 'goal stays authoritative; summaries do not reset it or rounds'),
+      const marker = 'bc-goal-' + useId().replace(/[^a-zA-Z0-9_-]/g, '')
+      return h(StrategySvg, { mode: 'goal', marker,
+        label: 'Goal 增强：较早历史与只读权威 Goal / Todo 合流，生成目标、约束、进展、下一步摘要；近期原文保留，不修改目标或轮次。' },
+        h(DiagramNode, { id: 'history', x: 2, y: 38, width: 76, height: 36, lines: ['较早历史'] }),
+        h(DiagramNode, { id: 'authority', x: 88, y: 38, width: 90, height: 36, lines: ['Goal / Todo', '权威状态·只读'], tone: 'dsh-bc-node-dashed' }),
+        h(DiagramEdge, { from: 'history', to: 'summary', d: 'M40 74 L40 88 L54 88 L54 102', marker }),
+        h(DiagramEdge, { from: 'authority', to: 'summary', d: 'M133 74 L133 88 L54 88 L54 102', marker }),
+        h(DiagramNode, { id: 'summary', x: 2, y: 102, width: 104, height: 40, lines: ['目标·约束', '进展·下一步'], tone: 'dsh-bc-node-accent' }),
+        h(DiagramNode, { id: 'tail', x: 116, y: 102, width: 62, height: 40, lines: ['近期原文', '保留'], tone: 'dsh-bc-node-strong' }),
+        h('text', { x: 90, y: 164, textAnchor: 'middle' }, '写入原生记录 · 不接管目标'),
       )
     }
 
-    /** File-handoff compaction: temp file first, body stored in native events. */
     function HandoffDiagram() {
-      return h(
-        'svg',
-        {
-          className: 'dsh-bc-diagram',
-          viewBox: '0 0 260 148',
-          role: 'img',
-          'data-diagram': 'handoff',
-          'aria-label':
-            'File handoff strategy. The conversation and authoritative state produce a per-attempt temporary Markdown handoff file. Native events store the same handoff body, so the native checkpoint remains self-contained. A successful manual run may schedule one same-session continuation. Recent verbatim messages are retained.',
-        },
-        h('title', null, 'File handoff compaction strategy'),
-        h('rect', { className: 'dsh-bc-node', x: 4, y: 6, width: 82, height: 28, rx: 5 }),
-        h('text', { x: 45, y: 24, textAnchor: 'middle' }, 'conversation'),
-        h('text', { className: 'dsh-bc-diagram-note', x: 45, y: 43, textAnchor: 'middle' }, '+ authoritative state'),
-        h('path', { className: 'dsh-bc-edge', d: 'M88 20h16m-5-4 5 4-5 4' }),
-        h('path', { className: 'dsh-bc-node dsh-bc-node-dashed', d: 'M110 6h132l10 10v36H110z' }),
-        h('path', { className: 'dsh-bc-edge', d: 'M242 6v10h10' }),
-        h('text', { x: 176, y: 26, textAnchor: 'middle' }, 'temporary handoff file'),
-        h('text', { className: 'dsh-bc-diagram-note', x: 176, y: 38, textAnchor: 'middle' }, 'per attempt · OS temp · owner-only'),
-        h('path', { className: 'dsh-bc-edge', d: 'M176 52v10m-4-5 4 5 4-5' }),
-        h('rect', { className: 'dsh-bc-node dsh-bc-node-accent', x: 4, y: 66, width: 132, height: 28, rx: 5 }),
-        h('text', { x: 70, y: 84, textAnchor: 'middle' }, 'native events store body'),
-        h('rect', { className: 'dsh-bc-node dsh-bc-node-strong', x: 148, y: 66, width: 108, height: 28, rx: 5 }),
-        h('text', { x: 202, y: 84, textAnchor: 'middle' }, 'recent verbatim retained'),
-        h('path', { className: 'dsh-bc-edge', d: 'M70 94v14h66' }),
-        h('rect', { className: 'dsh-bc-node dsh-bc-node-accent', x: 4, y: 108, width: 132, height: 26, rx: 5 }),
-        h('text', { x: 70, y: 125, textAnchor: 'middle' }, 'same-session continuation'),
-        h('text', { className: 'dsh-bc-diagram-note', x: 196, y: 125, textAnchor: 'middle' }, 'no new session'),
-        h('text', { className: 'dsh-bc-diagram-note', x: 130, y: 145, textAnchor: 'middle' }, 'file is a convenience copy; checkpoint body is self-contained'),
+      const marker = 'bc-handoff-' + useId().replace(/[^a-zA-Z0-9_-]/g, '')
+      return h(StrategySvg, { mode: 'handoff', marker,
+        label: '文件 Handoff：对话与状态生成本次临时交接文件，正文写入原生事件，再在同会话继续；近期原文保留。文件不是唯一恢复来源。' },
+        h(DiagramNode, { id: 'history', x: 2, y: 38, width: 64, height: 36, lines: ['对话', '与状态'] }),
+        h(DiagramNode, { id: 'file', x: 88, y: 38, width: 90, height: 36, lines: ['临时文件', '本次交接'], tone: 'dsh-bc-node-dashed' }),
+        h(DiagramEdge, { from: 'history', to: 'file', d: 'M66 56 L88 56', marker }),
+        h(DiagramEdge, { from: 'file', to: 'summary', d: 'M133 74 L133 86 L54 86 L54 100', marker }),
+        h(DiagramNode, { id: 'summary', x: 2, y: 100, width: 104, height: 36, lines: ['原生事件', '保存交接正文'], tone: 'dsh-bc-node-accent' }),
+        h(DiagramNode, { id: 'tail', x: 116, y: 100, width: 62, height: 36, lines: ['近期原文', '保留'], tone: 'dsh-bc-node-strong' }),
+        h(DiagramEdge, { from: 'summary', to: 'continuation', d: 'M54 136 L54 146', marker }),
+        h(DiagramNode, { id: 'continuation', x: 2, y: 146, width: 176, height: 22, lines: ['同会话继续 · 不新建会话'] }),
       )
     }
 
@@ -667,17 +641,16 @@ window.__ModuleLoader__.load({
           h('span', { className: 'dsh-bc-mode-title' }, meta.label),
           meta.badge === undefined || meta.badge === null ? null : h('span', { className: 'dsh-bc-tag' }, meta.badge),
           props.selected
-            ? h('span', { className: 'dsh-bc-selected-tag', 'data-bc-selected-tag': 'true' }, '✓ Selected')
+            ? h('span', { className: 'dsh-bc-selected-tag', 'data-bc-selected-tag': 'true' }, '已选')
             : null,
         ),
         h('p', { className: 'dsh-bc-mode-description' }, meta.description),
         h('div', { className: 'dsh-bc-diagram-wrap' }, h(Diagram)),
-        h('p', { className: 'dsh-bc-caption' }, meta.caption),
         props.pending
           ? h(
               'p',
               { className: 'dsh-bc-mode-pending', 'data-bc-mode-pending': 'true' },
-              'Selected or saved mode differs from the active engine snapshot — reload the profile to apply.',
+              '与运行模式不同；保存后重载 profile 生效。',
             )
           : null,
       )
@@ -711,7 +684,7 @@ window.__ModuleLoader__.load({
         null,
         h(
           'div',
-          { className: 'dsh-bc-modes', role: 'radiogroup', 'aria-label': 'Compaction mode', 'data-bc': 'mode-cards' },
+          { className: 'dsh-bc-modes', role: 'radiogroup', 'aria-label': '压缩模式', 'data-bc': 'mode-cards' },
           MODES.map((mode) =>
             h(ModeCard, {
               key: mode,
@@ -732,7 +705,11 @@ window.__ModuleLoader__.load({
             }),
           ),
         ),
-        h('p', { className: 'dsh-bc-caption', 'data-bc': 'strategy-note' }, STRATEGY_NOTE),
+        h('div', { className: 'dsh-bc-strategy-foot' },
+          h('p', { className: 'dsh-bc-caption', 'data-bc': 'strategy-note' }, STRATEGY_NOTE),
+          h('details', { className: 'dsh-bc-explanation' }, h('summary', null, '模式说明'),
+            MODES.map((mode) => h('p', { key: mode, className: 'dsh-bc-caption' }, MODE_META[mode].label + '：' + MODE_META[mode].caption))),
+        ),
       )
     }
 
@@ -767,45 +744,45 @@ window.__ModuleLoader__.load({
       if (typeof text !== 'string' || text.length === 0) return null
       if (/leaving no message budget/i.test(text)) {
         return {
-          label: 'Capacity too small',
-          hint: 'Adjust the summary model/context capacity or lower maxTokens.',
+          label: '模型容量不足',
+          hint: '请调整摘要模型 / 上下文容量，或降低 maxTokens。',
         }
       }
       if (/leaving no pressure budget/i.test(text)) {
         return {
-          label: 'Headroom and output reserve fill the window',
-          hint: 'Lower headroomTokens or maxTokens, or choose a larger-context model.',
+          label: '额外预留与输出预留占满窗口',
+          hint: '请降低 headroomTokens / maxTokens，或选择更大窗口的模型。',
         }
       }
       if (/must be less than threshold tokens/i.test(text)) {
         return {
-          label: 'Retention conflicts with the trigger',
-          hint: 'Lower the retention budget or raise the threshold ratio.',
+          label: '保留预算与触发线冲突',
+          hint: '请降低保留预算或提高阈值比例。',
         }
       }
       if (/no safe compactable range/i.test(text)) {
         return {
-          label: /system prompt|retained tail|tool-call/i.test(text) ? 'Fixed prefix / retained tail leaves no safe range' : 'No safe compactable range',
-          hint: 'Lower the retention budget or threshold, or wait for more compactable history.',
+          label: /system prompt|retained tail|tool-call/i.test(text) ? '固定前缀 / 近期保留未留出安全区间' : '无安全可压缩区间',
+          hint: '请降低保留预算 / 阈值，或等待更多可压缩历史。',
         }
       }
       if (/no routed request/i.test(text)) {
         return {
-          label: 'No routed request',
-          hint: 'Send one request in the session or configure an explicit summary provider/model.',
+          label: '尚无模型路由请求',
+          hint: '请先在会话中发送请求，或显式配置摘要 provider / model。',
         }
       }
       if (/no context capacity/i.test(text) || /model metadata is unavailable/i.test(text)) {
         return {
-          label: 'Model capacity unknown',
-          hint: 'Check the adapter metadata for the routed model.',
+          label: '模型容量未知（unknown）',
+          hint: '请检查该路由模型的适配器元数据。',
         }
       }
       if (/below the automatic trigger/i.test(text)) {
-        return { label: 'Below the automatic trigger (informational)', hint: null }
+        return { label: '尚未到达自动触发线（提示）', hint: null }
       }
       if (/automatic compaction is disabled/i.test(text)) {
-        return { label: 'Automatic compaction is off (informational)', hint: 'Enable automatic compaction in Advanced settings.' }
+        return { label: '自动压缩已关闭（提示）', hint: '可在高级选项中开启自动压缩。' }
       }
       return null
     }
@@ -983,27 +960,27 @@ window.__ModuleLoader__.load({
 
       return h(
         Section,
-        { name: 'budget', title: 'Context budget and retention', aside: sessionControl },
+        { name: 'budget', title: '上下文预算与保留范围', aside: sessionControl },
         h(
           'div',
           { className: 'dsh-bc-budget-facts' },
-          h(Row, { label: 'Context window', value: windowText }),
-          h(Row, { label: 'Current tokens', value: currentText, help: `Measurement: ${measurement}` }),
-          h(Row, { label: 'Fixed system/tools prefix', value: fixedText }),
-          h(Row, { label: 'Configured threshold ratio', value: thresholdRatio }),
-          h(Row, { label: 'Effective automatic trigger', value: thresholdText }),
-          h(Row, { label: 'Effective retained tail budget', value: retainText }),
-          h(Row, { label: 'Summary output cap (maxTokens)', value: summaryText }),
+          h(Row, { label: '模型窗口', value: windowText }),
+          h(Row, { label: '当前上下文', value: currentText, help: `Measurement: ${measurement}` }),
+          h(Row, { label: '固定提示 / 工具前缀', value: fixedText }),
+          h(Row, { label: '配置阈值比例（草稿）', value: thresholdRatio }),
+          h(Row, { label: '运行触发线', value: thresholdText }),
+          h(Row, { label: '运行保留预算', value: retainText }),
+          h(Row, { label: '摘要输出上限（maxTokens）', value: summaryText }),
         ),
         h(
           'p',
           { className: 'dsh-bc-caption' },
-          'The trigger is min(window × thresholdRatio, window − output reserve − headroom). The exact output-reserve/headroom split is not exposed by the read-only payload; the effective trigger already includes both. Headroom is configured below; the routed output reserve belongs to the session request.',
+          '触发线 = min(窗口 × 阈值比例, 窗口 − 输出预留 − headroom)。诊断未单独提供输出预留与 headroom 的分项，运行触发线已计入两者。',
         ),
         h(Field, {
           name: 'thresholdRatio',
-          label: 'Threshold ratio',
-          help: 'Request-pressure fraction in (0, 1). The effective trigger above also accounts for the routed output reserve and headroom.',
+          label: '自动压缩阈值（thresholdRatio）',
+          help: '填写 0～1 之间的比例；运行触发线还受输出预留与 headroom 约束。',
           error: props.fieldError('thresholdRatio'),
           children: (id) =>
             h('input', {
@@ -1021,19 +998,19 @@ window.__ModuleLoader__.load({
           ? h(
               'p',
               { className: 'dsh-bc-note', 'data-bc': 'budget-not-applicable' },
-              'Budget and preview are not drawn: this session runs a different compaction engine. The mode, threshold and retention controls below still configure this plugin for sessions that use it.',
+              '此会话使用其他压缩引擎，不绘制预算与预览。以下配置仍适用于使用本插件的会话。',
             )
           : inspectError !== null && inspectError !== undefined
-            ? h('p', { className: 'dsh-bc-error', role: 'alert' }, `Read-only inspection failed: ${inspectError}. Budget values are unknown; the form remains editable.`)
+            ? h('p', { className: 'dsh-bc-error', role: 'alert' }, `只读诊断失败：${inspectError}。预算未知（unknown），表单仍可编辑。`)
             : emptySession
-              ? h('p', { className: 'dsh-bc-unknown', 'data-bc': 'budget-empty' }, 'Select a session to view measured budget values and the current safe cut. Plugin state is shown without a session.')
+              ? h('p', { className: 'dsh-bc-unknown', 'data-bc': 'budget-empty' }, '请选择会话以读取预算与安全切点；当前仅显示插件状态，数值 unknown。')
               : inspectLoading
-                ? h('p', { className: 'dsh-bc-note', role: 'status' }, 'Reading the session budget…')
+                ? h('p', { className: 'dsh-bc-note', role: 'status' }, '正在读取会话预算…')
                 : segments === null
                   ? h(
                       'p',
                       { className: 'dsh-bc-unknown', 'data-bc': 'budget-incomplete' },
-                      'Budget incomplete or unavailable — some values are unknown, so no token distribution is drawn.',
+                      '预算数据不完整或不可用（unknown），不绘制虚构分布。',
                     )
                   : h(
                       'div',
@@ -1050,31 +1027,31 @@ window.__ModuleLoader__.load({
                           `retained tail ${tokensText(segments.retain)}; effective trigger ${tokensText(budget.thresholdTokens)}. ` +
                           'The zone from the trigger to the window end is output reserve plus headroom.',
                         segments: [
-                          { key: 'fixed', label: 'Fixed prefix', tokens: segments.fixed, tone: 'fixed' },
-                          { key: 'history', label: 'Earlier history (compactable)', tokens: segments.earlier, tone: 'history' },
-                          { key: 'tail', label: 'Retained recent tail', tokens: segments.retain, tone: 'tail' },
-                          { key: 'free', label: 'Unused window', tokens: Math.max(0, segments.windowTokens - segments.current), tone: 'free' },
+                          { key: 'fixed', label: '固定前缀', tokens: segments.fixed, tone: 'fixed' },
+                          { key: 'history', label: '较早历史（可压缩）', tokens: segments.earlier, tone: 'history' },
+                          { key: 'tail', label: '近期保留原文', tokens: segments.retain, tone: 'tail' },
+                          { key: 'free', label: '未用窗口', tokens: Math.max(0, segments.windowTokens - segments.current), tone: 'free' },
                         ],
                       }),
                       h(TokenLegend, {
                         name: 'budget-legend',
                         items: [
-                          { key: 'fixed', label: 'Fixed prefix', tokens: segments.fixed, tone: 'fixed' },
-                          { key: 'history', label: 'Earlier history', tokens: segments.earlier, tone: 'history' },
-                          { key: 'tail', label: 'Retained recent tail', tokens: segments.retain, tone: 'tail' },
-                          { key: 'reserve', label: 'Reserve/headroom zone (trigger → window end)', tokens: null, tone: 'reserve' },
+                          { key: 'fixed', label: '固定前缀', tokens: segments.fixed, tone: 'fixed' },
+                          { key: 'history', label: '较早历史', tokens: segments.earlier, tone: 'history' },
+                          { key: 'tail', label: '近期保留原文', tokens: segments.retain, tone: 'tail' },
+                          { key: 'reserve', label: '输出 / 额外预留区（触发线 → 窗口末端）', tokens: null, tone: 'reserve' },
                         ],
                       }),
                       h(
                         'p',
                         { className: 'dsh-bc-caption' },
-                        `Trigger line: ${tokensText(budget.thresholdTokens)}. Current marker at ${tokensText(segments.current)}. The band after the trigger is output reserve plus headroom, not free compaction space.`,
+                        `触发线：${tokensText(budget.thresholdTokens)}；当前：${tokensText(segments.current)}。触发线后的区域为输出与额外预留，不是可自由压缩空间。`,
                       ),
                     ),
         h(
           'div',
           { className: 'dsh-bc-retention' },
-          h('h4', { className: 'dsh-bc-h4' }, 'Recent tail retention (mutually exclusive forms)'),
+          h('h4', { className: 'dsh-bc-h4' }, '近期原文保留范围'),
           h(
             'div',
             { className: 'dsh-bc-retention-forms', role: 'radiogroup', 'aria-label': 'Retention budget form' },
@@ -1089,7 +1066,7 @@ window.__ModuleLoader__.load({
                 disabled,
                 onChange: () => props.onRetentionMode('ratio'),
               }),
-              h('span', null, 'Ratio of the usable window'),
+              h('span', null, '按可用窗口比例'),
             ),
             h(
               'label',
@@ -1102,17 +1079,19 @@ window.__ModuleLoader__.load({
                 disabled,
                 onChange: () => props.onRetentionMode('tokens'),
               }),
-              h('span', null, 'Absolute tokens'),
+              h('span', null, '按 token 数'),
             ),
           ),
           draft.retainMode === 'ratio'
             ? h(Field, {
                 name: 'retainRatio',
-                label: 'Retain ratio',
+                label: '保留比例（retainRatio）',
                 help:
-                  draft.retainRatio === '' && activeConfig !== null && typeof activeConfig.retainRatio === 'number'
-                    ? `Empty keeps the engine default; the active snapshot resolves to ${ratioText(activeConfig.retainRatio)}.`
-                    : 'A fraction of the usable window. Saving this form clears retainTokens.',
+                  h('span', { 'data-bc': 'retention-source' }, draft.retainRatio !== ''
+                    ? `${draft.retainRatio === String(props.stateValue?.retainRatio) ? '已保存（宿主表单）' : '草稿'}：${ratioText(Number(draft.retainRatio))}；保存将清除 retainTokens。`
+                    : activeConfig !== null && typeof activeConfig.retainRatio === 'number'
+                      ? `留空继承。当前运行值 ${ratioText(activeConfig.retainRatio)}（来源 activeConfig）；重载后按新配置重新解析，不保证仍是此值。`
+                      : '留空继承；当前有效默认值 unknown（诊断未返回 activeConfig），不填入演示值。'),
                 error: props.fieldError('retainRatio'),
                 children: (id) =>
                   h('input', {
@@ -1125,15 +1104,15 @@ window.__ModuleLoader__.load({
                     placeholder:
                       activeConfig !== null && typeof activeConfig.retainRatio === 'number'
                         ? String(activeConfig.retainRatio)
-                        : 'engine default',
+                        : '继承引擎默认值',
                     disabled,
                     onChange: (event) => props.onDraft({ retainRatio: event.target.value }),
                   }),
               })
             : h(Field, {
                 name: 'retainTokens',
-                label: 'Retain tokens',
-                help: 'Absolute recent-tail budget. Saving this form clears retainRatio.',
+                label: '保留 token 数（retainTokens）',
+                help: '近期原文的绝对 token 预算；保存将清除 retainRatio。',
                 error: props.fieldError('retainTokens'),
                 children: (id) =>
                   h('input', {
@@ -1153,83 +1132,83 @@ window.__ModuleLoader__.load({
             h(
               'li',
               null,
-              h('strong', null, 'Automatic pressure: '),
-              `keeps up to the resolved recent-tail budget (${retainText}) and aligns the cut to native tool-pairing boundaries.`,
+              h('strong', null, '自动压力压缩：'),
+              `按运行保留预算（${retainText}）保留近期原文，并按原生工具配对边界对齐。`,
             ),
             h(
               'li',
               null,
-              h('strong', null, 'Manual compact / context-overflow recovery: '),
-              'uses a more aggressive safe span (the native engine uses retainTokens = 0 for manual/overflow), so it may keep less than the configured budget.',
+              h('strong', null, '手动压缩 / 上下文超限恢复：'),
+              '使用更激进的安全区间（原生手动 / overflow 使用 retainTokens = 0），可能少于配置保留量。',
             ),
-            h('li', null, 'The recent tail is a budget, not a permanent pin: the actual safe cut may differ from the budget while keeping tool-call/result pairs intact.'),
+            h('li', null, '近期保留是预算，不是永久 pin；实际安全切点可不同于预算，但仍保持工具调用 / 结果配对。'),
           ),
         ),
         h(
           'div',
           { className: 'dsh-bc-preview' },
-          h('h4', { className: 'dsh-bc-h4' }, 'Read-only safe cut and composition'),
+          h('h4', { className: 'dsh-bc-h4' }, '只读安全切点与组成'),
           engineApplies === false
-            ? h('p', { className: 'dsh-bc-note' }, 'No preview is drawn for a session owned by a different compaction engine.')
+            ? h('p', { className: 'dsh-bc-note' }, '该会话使用其他压缩引擎，不绘制预览。')
             : inspectError !== null && inspectError !== undefined
-              ? h('p', { className: 'dsh-bc-note' }, 'Preview unavailable because inspection failed.')
+              ? h('p', { className: 'dsh-bc-note' }, '诊断失败，预览不可用。')
               : emptySession
-                ? h('p', { className: 'dsh-bc-unknown' }, 'No session selected — no computable safe cut.')
+                ? h('p', { className: 'dsh-bc-unknown' }, '未选择会话，当前无可计算切点。')
                 : preview === null || preview === undefined
-                  ? h('p', { className: 'dsh-bc-unknown' }, 'No computable safe cut is available for this session.')
+                  ? h('p', { className: 'dsh-bc-unknown' }, '该会话当前无可计算切点。')
                   : hasSafeCut
                     ? h(
                         'p',
                         { className: 'dsh-bc-strong', 'data-bc': 'safe-cut' },
-                        `Safe cut candidate: surface seq ${previewStart}–${previewEnd}; before ${tokensText(preview.beforeTokens)}; ` +
-                          `after upper bound ${preview.afterUpperBoundTokens === null ? 'unknown' : `≤ ${tokensText(preview.afterUpperBoundTokens)}`}.`,
+                        `安全切点候选：surface seq ${previewStart}–${previewEnd}；压缩前 ${tokensText(preview.beforeTokens)}；` +
+                          `压缩后预算上界估算 ${preview.afterUpperBoundTokens === null ? 'unknown' : `≤ ${tokensText(preview.afterUpperBoundTokens)}`}.`,
                       )
                     : h(
                         'p',
                         { className: 'dsh-bc-unknown', 'data-bc': 'no-safe-cut' },
-                        `No computable safe cut. ${typeof preview.reason === 'string' && preview.reason.length > 0 ? preview.reason : 'The native selection returned no range.'}`,
+                        `当前无可计算切点。${typeof preview.reason === 'string' && preview.reason.length > 0 ? preview.reason : '原生选区未返回区间。'}`,
                       ),
           h(ReasonList, { reasons }),
           segments !== null
             ? h(
                 'div',
                 { className: 'dsh-bc-composition' },
-                h('h5', { className: 'dsh-bc-h5' }, 'Before / after composition'),
-                h('p', { className: 'dsh-bc-caption' }, 'Before: fixed prefix + earlier history + recent verbatim. After: fixed prefix + summary output budget + recent verbatim.'),
-                h('p', { className: 'dsh-bc-strong', 'data-bc': 'before-label' }, 'Before (current surface)'),
+                h('h5', { className: 'dsh-bc-h5' }, '压缩前后组成'),
+                h('p', { className: 'dsh-bc-caption' }, '压缩前：固定前缀 + 较早历史 + 近期原文；压缩后：固定前缀 + 摘要输出预算 + 近期原文。'),
+                h('p', { className: 'dsh-bc-strong', 'data-bc': 'before-label' }, '压缩前（当前上下文）'),
                 h(TokenBar, {
                   name: 'before-bar',
                   scale: segments.scale,
                   ariaLabel: `Before compaction: fixed prefix ${tokensText(segments.fixed)}, earlier history ${tokensText(segments.earlier)}, retained tail ${tokensText(segments.retain)}.`,
                   segments: [
-                    { key: 'fixed', label: 'Fixed prefix', tokens: segments.fixed, tone: 'fixed' },
-                    { key: 'history', label: 'Earlier history', tokens: segments.earlier, tone: 'history' },
-                    { key: 'tail', label: 'Retained tail', tokens: segments.retain, tone: 'tail' },
+                    { key: 'fixed', label: '固定前缀', tokens: segments.fixed, tone: 'fixed' },
+                    { key: 'history', label: '较早历史', tokens: segments.earlier, tone: 'history' },
+                    { key: 'tail', label: '近期原文', tokens: segments.retain, tone: 'tail' },
                   ],
                 }),
-                h('p', { className: 'dsh-bc-strong', 'data-bc': 'after-label' }, 'After upper bound (estimate)'),
+                h('p', { className: 'dsh-bc-strong', 'data-bc': 'after-label' }, '压缩后（预算上界估算）'),
                 h(TokenBar, {
                   name: 'after-bar',
                   scale: segments.scale,
                   ariaLabel: `After compaction upper bound: fixed prefix ${tokensText(segments.fixed)}, summary output budget ${tokensText(segments.summary)}, retained tail ${tokensText(segments.retain)}.`,
                   segments: [
-                    { key: 'fixed', label: 'Fixed prefix', tokens: segments.fixed, tone: 'fixed' },
-                    { key: 'summary', label: 'Summary output budget', tokens: segments.summary, tone: 'summary' },
-                    { key: 'tail', label: 'Retained tail', tokens: segments.retain, tone: 'tail' },
+                    { key: 'fixed', label: '固定前缀', tokens: segments.fixed, tone: 'fixed' },
+                    { key: 'summary', label: '摘要输出预算', tokens: segments.summary, tone: 'summary' },
+                    { key: 'tail', label: '近期原文', tokens: segments.retain, tone: 'tail' },
                   ],
                 }),
                 h(TokenLegend, {
                   name: 'composition-legend',
                   items: [
-                    { key: 'fixed', label: 'Fixed prefix', tokens: segments.fixed, tone: 'fixed' },
-                    { key: 'summary', label: 'Summary output budget', tokens: segments.summary, tone: 'summary' },
-                    { key: 'tail', label: 'Retained tail', tokens: segments.retain, tone: 'tail' },
+                    { key: 'fixed', label: '固定前缀', tokens: segments.fixed, tone: 'fixed' },
+                    { key: 'summary', label: '摘要输出预算', tokens: segments.summary, tone: 'summary' },
+                    { key: 'tail', label: '近期原文', tokens: segments.retain, tone: 'tail' },
                   ],
                 }),
                 h(
                   'p',
                   { className: 'dsh-bc-caption' },
-                  'afterUpperBoundTokens is a budget upper-bound estimate (it includes the summary output budget and native checkpoint framing), not a prediction of the generated summary length. The retained tail is the resolved retention budget; the actual safe cut may differ.',
+                  'afterUpperBoundTokens 仅为预算上界估算（含摘要输出预算与原生 checkpoint 结构），不是生成摘要长度预测。近期原文按运行保留预算展示，实际安全切点可能不同。',
                 ),
               )
             : null,
@@ -1255,37 +1234,57 @@ window.__ModuleLoader__.load({
       const modelListId = `dsh-bc-models-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
       const summaryRoute =
         draft.provider === '' && draft.model === ''
-          ? 'follow the session route (empty provider/model pair)'
+          ? '跟随当前会话'
           : draft.provider === '' || draft.model === ''
-            ? 'incomplete pair — set provider and model together'
+            ? '请成对填写 provider / model'
             : `${draft.provider}/${draft.model}`
       const summaryEffort = nativeMode
         ? NATIVE_NOT_APPLICABLE
         : draft.effort === ''
-          ? 'model default (empty)'
+          ? '摘要模型默认值（留空）'
           : draft.effort
 
       return h(
         Section,
-        { name: 'model', title: 'Summary model and reasoning effort' },
+        { name: 'model', title: '摘要模型与思考强度' },
+        h(Field, {
+          name: 'summaryRoute', label: '摘要模型',
+          help: '仅选择摘要路由，不修改主会话模型；候选来自宿主，实际可用性仍由会话决定。',
+          children: (id) => h('select', {
+            id, name: 'summaryRoute', className: 'dsh-bc-input',
+            value: draft.provider === '' && draft.model === '' ? '' : route === undefined ? 'custom' : JSON.stringify([draft.provider, draft.model]),
+            disabled: props.disabled,
+            onChange: (event) => {
+              if (event.target.value === 'custom') return
+              const [provider, model] = event.target.value === '' ? ['', ''] : JSON.parse(event.target.value)
+              props.onDraft({ provider, model })
+            },
+          },
+            h('option', { value: '' }, '跟随当前会话'),
+            routes.map((entry) => h('option', { key: JSON.stringify([entry.provider, entry.model]), value: JSON.stringify([entry.provider, entry.model]) }, entry.provider + ' / ' + entry.model)),
+            h('option', { value: 'custom', disabled: true }, draft.provider || draft.model ? '自定义 / 当前值：' + summaryRoute : '自定义：展开下方输入'),
+          ),
+        }),
+        h('details', { className: 'dsh-bc-explanation', open: route === undefined && (draft.provider !== '' || draft.model !== '') },
+          h('summary', null, '自定义 Provider / Model 与当前值'),
         h(
           'div',
           { className: 'dsh-bc-summary-line', 'data-bc': 'model-summary' },
-          h('span', { className: 'dsh-bc-strong' }, `Summary model: ${summaryRoute}`),
-          h('span', { className: 'dsh-bc-caption' }, `Effort: ${summaryEffort}`),
+          h('span', { className: 'dsh-bc-strong' }, `摘要模型: ${summaryRoute}`),
+          h('span', { className: 'dsh-bc-caption' }, `思考强度：${summaryEffort}`),
         ),
         h(
           'p',
           { className: 'dsh-bc-caption' },
-          'An empty provider/model pair follows the session route. An explicit pair is saved atomically and never changes the main session model. An empty effort means the selected summary model’s own default, not an unconditional inheritance from the main model.',
+          'provider / model 成对保存，留空跟随会话；effort 留空使用摘要模型自身默认值，不无条件继承主模型。',
         ),
         h(
           'div',
           { className: 'dsh-bc-grid' },
           h(Field, {
             name: 'summarizationProvider',
-            label: 'Summary provider',
-            help: 'Empty with an empty model follows the session. Use a host-allowed candidate or free text.',
+            label: '摘要 Provider',
+            help: '可自定义；与 model 一起留空即跟随会话。',
             error: props.fieldError('summarizationProvider'),
             children: (id) =>
               h('input', {
@@ -1302,8 +1301,8 @@ window.__ModuleLoader__.load({
           }),
           h(Field, {
             name: 'summarizationModel',
-            label: 'Summary model',
-            help: 'Saved together with the provider; cleared together with the provider.',
+            label: '摘要模型',
+            help: '与 provider 成对保存；清空任一项会清空两者。',
             error: props.fieldError('summarizationModel'),
             children: (id) =>
               h('input', {
@@ -1321,18 +1320,19 @@ window.__ModuleLoader__.load({
           h('datalist', { id: providerListId }, providerOptions.map((provider) => h('option', { key: provider, value: provider }))),
           h('datalist', { id: modelListId }, modelOptions.map((model) => h('option', { key: model, value: model }))),
         ),
+        ),
         h(
           'div',
           { className: 'dsh-bc-effort' },
           route !== undefined && route.efforts.length > 0
             ? h(Field, {
                 name: 'reasoningEffort',
-                label: 'Reasoning effort',
+                label: '思考强度',
                 help: nativeMode
                   ? NATIVE_NOT_APPLICABLE
                   : draft.effort === ''
-                    ? 'Empty uses the selected model’s default effort.'
-                    : 'Must be an effort the selected model advertises.',
+                    ? '留空使用摘要模型的默认强度。'
+                    : '候选来自所选模型能力。',
                 error: props.fieldError('reasoningEffort'),
                 children: (id) =>
                   h(
@@ -1345,23 +1345,23 @@ window.__ModuleLoader__.load({
                       disabled: effortLocked,
                       onChange: (event) => props.onDraft({ effort: event.target.value }),
                     },
-                    h('option', { value: '' }, 'Model default (empty)'),
+                    h('option', { value: '' }, '摘要模型默认值（留空）'),
                     route.efforts.map((effort) =>
-                      h('option', { key: effort, value: effort }, effort === route.defaultEffort ? `${effort} (model default)` : effort),
+                      h('option', { key: effort, value: effort }, effort === route.defaultEffort ? `${effort} （模型默认）` : effort),
                     ),
                     draft.effort !== '' && !route.efforts.includes(draft.effort)
-                      ? h('option', { value: draft.effort }, `${draft.effort} (saved; not advertised)`)
+                      ? h('option', { value: draft.effort }, `${draft.effort} （当前值；未声明支持）`)
                       : null,
                   ),
               })
             : h(Field, {
                 name: 'reasoningEffort',
-                label: 'Reasoning effort',
+                label: '思考强度',
                 help: nativeMode
                   ? NATIVE_NOT_APPLICABLE
                   : modelsStatus === 'error'
-                    ? 'Model capability metadata is unavailable; free text remains available and may be rejected by the engine.'
-                    : 'Capability unknown for this route: free-text effort, or leave empty for the model default.',
+                    ? '模型能力不可用；可自定义，实际请求可能被拒绝。'
+                    : '此路由能力 unknown；可自定义或留空。',
                 error: props.fieldError('reasoningEffort'),
                 children: (id) =>
                   h('input', {
@@ -1371,13 +1371,13 @@ window.__ModuleLoader__.load({
                     type: 'text',
                     value: draft.effort,
                     disabled: effortLocked,
-                    placeholder: nativeMode ? NATIVE_NOT_APPLICABLE : 'model default (empty)',
+                    placeholder: nativeMode ? NATIVE_NOT_APPLICABLE : '摘要模型默认值（留空）',
                     autoComplete: 'off',
                     onChange: (event) => props.onDraft({ effort: event.target.value }),
                   }),
               }),
           nativeMode
-            ? h('p', { className: 'dsh-bc-note', 'data-bc': 'effort-native' }, `Reasoning effort: ${NATIVE_NOT_APPLICABLE}. The saved value is kept for switching back.`)
+            ? h('p', { className: 'dsh-bc-note', 'data-bc': 'effort-native' }, `思考强度: ${NATIVE_NOT_APPLICABLE}. 保留当前值供切回增强模式。`)
             : null,
         ),
         props.routeWarning === null || props.routeWarning === undefined
@@ -1391,25 +1391,25 @@ window.__ModuleLoader__.load({
           'div',
           { className: 'dsh-bc-candidates' },
           modelsStatus === 'loading' || modelsStatus === 'refreshing'
-            ? h('p', { className: 'dsh-bc-note', role: 'status' }, 'Reading host-allowed summary-model candidates…')
+            ? h('p', { className: 'dsh-bc-note', role: 'status' }, '正在读取宿主模型候选…')
             : modelsStatus === 'error'
               ? h(
                   'p',
                   { className: 'dsh-bc-note', 'data-bc': 'models-error' },
-                  `Allowed candidate metadata unavailable: ${modelsError}. Free-text provider/model remains available; capabilities are unknown.`,
+                  `宿主候选元数据不可用：${modelsError}。仍可自定义 provider / model；能力未知（unknown）。`,
                 )
               : modelsEnabled !== true
                 ? h(
                     'p',
                     { className: 'dsh-bc-note', 'data-bc': 'models-unavailable' },
-                    'The Host’s allowed-model selection service is not enabled. Free-text provider/model is used; discovered and currently usable routes are unknown.',
+                    '宿主未启用候选服务；可自定义，模型能力与实际可用性 unknown。',
                   )
                 : h(
                     'details',
                     { className: 'dsh-bc-candidate-details' },
-                    h('summary', null, `Allowed candidates from the host model selection (${routes.length})`),
+                    h('summary', null, `宿主提供的模型候选（${routes.length}）`),
                     routes.length === 0
-                      ? h('p', { className: 'dsh-bc-note' }, 'The host allows no candidate routes.')
+                      ? h('p', { className: 'dsh-bc-note' }, '宿主未提供候选；可自定义。')
                       : h(
                           'ul',
                           { className: 'dsh-bc-candidate-list' },
@@ -1431,7 +1431,7 @@ window.__ModuleLoader__.load({
                     h(
                       'p',
                       { className: 'dsh-bc-caption' },
-                      'This is the discovered/allowed candidate set; it is not a promise that the current session can use a route. Credentials, capacity, and session availability are not verified by this read-only page.',
+                      '候选不保证当前会话可用；此只读页不验证凭据或容量。',
                     ),
                   ),
         ),
@@ -1444,7 +1444,7 @@ window.__ModuleLoader__.load({
       const nativeMode = props.draft.mode === 'native'
       return h(
         Section,
-        { name: 'cache', title: 'Cache priority' },
+        { name: 'cache', title: '缓存优先' },
         h(Toggle, {
           name: 'cachePriority',
           label: CACHE_PRIORITY_COPY,
@@ -1452,17 +1452,18 @@ window.__ModuleLoader__.load({
           disabled: props.disabled || nativeMode,
           onChange: (checked) => props.onDraft({ cachePriority: checked }),
           help:
-            'When enabled, the enhanced summary request keeps the conversation’s normal system/tools/history prefix so the provider can reuse its prompt cache; the instruction and volatile goal state go at the end.',
+            '增强摘要保留正常提示 / 工具 / 历史前缀，将动态指令放在末尾以尽可能复用缓存。',
           note: nativeMode
-            ? `${NATIVE_NOT_APPLICABLE}. The saved enhanced value is kept for switching back.`
+            ? `${NATIVE_NOT_APPLICABLE}. 保留增强配置供切回。`
             : null,
         }),
         h(
-          'ul',
-          { className: 'dsh-bc-bullets' },
-          h('li', null, 'Changing the summary provider or model can lose prefix reuse. That is a real trade-off, not a cost this plugin can hide.'),
-          h('li', null, 'A compaction replacement changes the old prefix; retained tail text does not preserve the old KV cache.'),
-          h('li', null, 'This is a best-effort preference, not a claim of lossless KV reuse or zero cache loss. Cache hits are only shown when the provider reports real usage.'),
+          'details',
+          { className: 'dsh-bc-explanation' },
+          h('summary', null, '缓存边界说明'),
+          h('p', { className: 'dsh-bc-caption' }, '切换摘要 provider / model 可能减少前缀复用。'),
+          h('p', { className: 'dsh-bc-caption' }, 'replacement 改变旧前缀；保留原文不等于保留旧 KV。'),
+          h('p', { className: 'dsh-bc-caption' }, '不保证无损 KV 或零缓存损失；只有 provider 返回 usage 才展示实测。'),
         ),
       )
     }
@@ -1475,25 +1476,25 @@ window.__ModuleLoader__.load({
       return h(
         'details',
         { className: 'dsh-bc-details', 'data-bc': 'advanced' },
-        h('summary', null, 'Advanced settings'),
+        h('summary', null, '高级选项'),
         h(
           'div',
           { className: 'dsh-bc-details-body' },
           h(Toggle, {
             name: 'auto',
-            label: 'Automatic pressure and overflow compaction',
+            label: '自动阈值 / 超限压缩',
             checked: draft.auto,
             disabled,
             onChange: (checked) => props.onDraft({ auto: checked }),
-            help: 'When off, automatic pressure/overflow compaction stops; manual /compact still works.',
+            help: '关闭后停止自动阈值 / 超限压缩；手动 /compact 仍可用。',
           }),
           h(
             'div',
             { className: 'dsh-bc-grid' },
             h(Field, {
               name: 'headroomTokens',
-              label: 'Headroom tokens',
-              help: 'Non-negative extra pressure headroom beyond the routed output reservation.',
+              label: '额外预留（headroomTokens）',
+              help: '路由输出预留之外的额外空间，非负整数。',
               error: props.fieldError('headroomTokens'),
               children: (id) =>
                 h('input', {
@@ -1509,8 +1510,8 @@ window.__ModuleLoader__.load({
             }),
             h(Field, {
               name: 'maxTokens',
-              label: 'Summary max tokens',
-              help: 'Positive summary output cap, counted with input against the model window. Empty follows the resolved headroom.',
+              label: '摘要输出上限（maxTokens）',
+              help: '正整数，与输入共用窗口；留空跟随有效 headroom。',
               error: props.fieldError('maxTokens'),
               children: (id) =>
                 h('input', {
@@ -1520,15 +1521,15 @@ window.__ModuleLoader__.load({
                   type: 'text',
                   inputMode: 'numeric',
                   value: draft.maxTokens,
-                  placeholder: 'follows headroomTokens',
+                  placeholder: '继承 headroomTokens',
                   disabled,
                   onChange: (event) => props.onDraft({ maxTokens: event.target.value }),
                 }),
             }),
             h(Field, {
               name: 'compactionRetries',
-              label: 'Compaction retries',
-              help: 'Extra attempts when pressure remains after a successful compaction. This is not a general network retry count.',
+              label: '压力残留重试（compactionRetries）',
+              help: '压缩成功后仍有压力时的额外次数；不是网络重试。',
               error: props.fieldError('compactionRetries'),
               children: (id) =>
                 h('input', {
@@ -1544,8 +1545,8 @@ window.__ModuleLoader__.load({
             }),
             h(Field, {
               name: 'maxOverflowRetries',
-              label: 'Max overflow retries',
-              help: 'Bounded recoveries after a provider-confirmed context overflow. 0 disables overflow recovery. Separate from post-compaction pressure retries.',
+              label: '超限恢复次数（maxOverflowRetries）',
+              help: 'provider 确认上下文超限后的有界恢复次数；0 表示关闭，与压缩后压力残留重试分开。',
               error: props.fieldError('maxOverflowRetries'),
               children: (id) =>
                 h('input', {
@@ -1563,9 +1564,9 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'dsh-bc-policies', 'data-bc': 'model-policies' },
-            h('h4', { className: 'dsh-bc-h4' }, 'Per-model policies (read-only)'),
+            h('h4', { className: 'dsh-bc-h4' }, '按模型覆盖（只读）'),
             policies.length === 0
-              ? h('p', { className: 'dsh-bc-note' }, 'No per-model overrides are configured; routes inherit the global values.')
+              ? h('p', { className: 'dsh-bc-note' }, '未配置按模型覆盖；路由继承全局值。')
               : h(
                   'ul',
                   { className: 'dsh-bc-policy-list' },
@@ -1590,7 +1591,7 @@ window.__ModuleLoader__.load({
           h(
             'p',
             { className: 'dsh-bc-caption' },
-            'No handoff-directory, compaction-history, memory, or sidecar database controls are provided. Handoff files live under the OS temporary directory and are not the only recovery source.',
+            '不提供交接目录、独立压缩历史、后台记忆或 sidecar 数据库。交接文件位于系统临时目录，不是唯一恢复来源。',
           ),
         ),
       )
@@ -1599,23 +1600,23 @@ window.__ModuleLoader__.load({
     // ── status section ────────────────────────────────────────────────────
 
     const STATUS_LABELS = Object.freeze({
-      running: 'Running',
-      completed: 'Completed',
-      failed: 'Failed',
-      cancelled: 'Cancelled',
-      'persistence-error': 'Persistence error',
+      running: '进行中',
+      completed: '已完成',
+      failed: '生成失败',
+      cancelled: '已取消',
+      'persistence-error': '持久化失败',
     })
 
     /** One-line engine ownership statement. */
     function engineNote(engine) {
-      if (engine === null || engine === undefined) return 'Engine ownership: unknown (no session selected).'
+      if (engine === null || engine === undefined) return '引擎归属未知（unknown；未选择会话）。'
       if (engine.inspectApplies === false) {
-        return `This session runs a different compaction engine (owner: ${engine.owner}). Mode and budget settings on this page do not apply to it; no fake budget or preview is drawn, and the recorded compaction below still comes from the session’s real native events.`
+        return `此会话使用其他压缩引擎（归属：${engine.owner}）。本页模式与预算不适用，不绘制虚构预算 / 预览；下方仍展示会话真实原生事件。`
       }
       if (engine.owner === 'unknown') {
-        return `Engine ownership could not be proven for this session (${engine.owner}). Budget and preview use this plugin’s active configuration; treat them as configuration diagnostics, not observed engine state.`
+        return `无法确认此会话引擎归属（${engine.owner}）。预算 / 预览基于本插件运行配置，仅作配置诊断，不代表已观测的引擎状态。`
       }
-      return `Compaction engine: ${engine.owner}. Budget and preview use this plugin’s configuration; inspection is read-only.`
+      return `压缩引擎：${engine.owner}。预算 / 预览基于本插件配置；诊断只读。`
     }
 
     /** The status of the last real native compaction bracket. */
@@ -1624,67 +1625,67 @@ window.__ModuleLoader__.load({
       if (record === null || record === undefined) {
         return h('p', { className: 'dsh-bc-unknown', 'data-bc': 'last-compaction-empty' }, props.emptyText)
       }
-      const status = STATUS_LABELS[record.status] ?? 'Unknown status'
+      const status = STATUS_LABELS[record.status] ?? '未知状态（unknown）'
       const cacheRead = typeof record.cacheReadTokens === 'number' ? record.cacheReadTokens : null
       const cacheWrite = typeof record.cacheWriteTokens === 'number' ? record.cacheWriteTokens : null
       const cacheRows = [
         cacheRead === null
           ? null
-          : h(Row, { key: 'cache-read', label: 'Cache read tokens (reported)', value: tokensText(cacheRead) }),
+          : h(Row, { key: 'cache-read', label: '缓存读取 token（实测）', value: tokensText(cacheRead) }),
         cacheWrite === null
           ? null
-          : h(Row, { key: 'cache-write', label: 'Cache write tokens (reported)', value: tokensText(cacheWrite) }),
+          : h(Row, { key: 'cache-write', label: '缓存写入 token（实测）', value: tokensText(cacheWrite) }),
       ].filter((row) => row !== null)
       return h(
         'div',
         { className: 'dsh-bc-status-record', 'data-bc': 'last-compaction', 'data-status': record.status ?? 'unknown' },
-        h('p', { className: `dsh-bc-status-line dsh-bc-status-${record.status ?? 'unknown'}`, 'data-bc': 'last-compaction-status' }, `${status} · ${record.trigger === 'manual' ? 'manual' : record.trigger === 'automatic' ? 'automatic' : 'unknown trigger'}`),
+        h('p', { className: `dsh-bc-status-line dsh-bc-status-${record.status ?? 'unknown'}`, 'data-bc': 'last-compaction-status' }, `${status} · ${record.trigger === 'manual' ? '手动' : record.trigger === 'automatic' ? '自动' : '触发原因未知（unknown）'}`),
         h(
           'div',
           { className: 'dsh-bc-status-grid' },
-          h(Row, { label: 'Trigger', value: record.trigger === 'manual' ? 'manual' : record.trigger === 'automatic' ? 'automatic' : 'unknown' }),
-          h(Row, { label: 'Status', value: status }),
-          h(Row, { label: 'Mode', value: typeof record.mode === 'string' ? record.mode : 'unknown (not provable from the record)' }),
-          h(Row, { label: 'Duration', value: durationText(record.durationMs) }),
-          h(Row, { label: 'Shadowed tokens (before)', value: tokensText(record.beforeTokens) }),
-          h(Row, { label: 'Checkpoint estimate (after)', value: tokensText(record.afterTokens) }),
+          h(Row, { label: '触发原因', value: record.trigger === 'manual' ? '手动' : record.trigger === 'automatic' ? '自动' : '未知（unknown）' }),
+          h(Row, { label: '状态', value: status }),
+          h(Row, { label: '历史模式', value: typeof record.mode === 'string' ? record.mode : '未知（unknown；原生记录无法证明）' }),
+          h(Row, { label: '耗时', value: durationText(record.durationMs) }),
+          h(Row, { label: '压缩前 token（已替换区）', value: tokensText(record.beforeTokens) }),
+          h(Row, { label: '压缩后 checkpoint 估算', value: tokensText(record.afterTokens) }),
           ...cacheRows,
         ),
         cacheRows.length === 0
-          ? h('p', { className: 'dsh-bc-caption' }, 'Cache usage: unknown. The provider did not report cache tokens for this attempt; absence is not zero and no savings rate is estimated.')
+          ? h('p', { className: 'dsh-bc-caption' }, '缓存用量未知（unknown）：provider 未报告本次缓存 token；缺失不等于 0，不估算节省率。')
           : null,
         h(
           'p',
           { className: 'dsh-bc-caption' },
-          'Cost: unknown (the inspect projection carries no pricing data). Token counts come from recorded native events/usage; missing fields are not filled from the current configuration.',
+          '费用未知（unknown；诊断无价格数据）。token 来自原生事件 / usage；缺失字段不使用当前配置补造。',
         ),
         record.status === 'persistence-error'
           ? h(
               'p',
               { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'persistence-error' },
-              'The checkpoint replacement may already be durable, but saving the session failed. This is not a clean success and not a full rollback.',
+              'checkpoint 替换可能已持久化，但会话保存失败；并非普通成功，也不是全部回滚。',
             )
           : null,
         record.status === 'failed'
           ? h(
               'p',
               { className: 'dsh-bc-note' },
-              'This attempt did not install a checkpoint. A failure does not prove the session had no earlier durable changes.',
+              '本次生成失败，未安装 checkpoint；这不代表会话此前没有持久化变更。',
             )
           : null,
         record.status === 'cancelled'
-          ? h('p', { className: 'dsh-bc-note' }, 'This attempt was cancelled. No checkpoint was installed for it.')
+          ? h('p', { className: 'dsh-bc-note' }, '本次已取消，未安装 checkpoint。')
           : null,
         record.status === 'running'
-          ? h('p', { className: 'dsh-bc-note' }, 'A live in-memory summary attempt is in flight in this process; it is not historical proof of completion.')
+          ? h('p', { className: 'dsh-bc-note' }, '本进程正在生成摘要（内存态），不代表历史记录已完成。')
           : null,
         record.error === null || record.error === undefined
           ? null
-          : h('p', { className: 'dsh-bc-error', 'data-bc': 'last-compaction-error' }, `Recorded error: ${record.error}`),
+          : h('p', { className: 'dsh-bc-error', 'data-bc': 'last-compaction-error' }, `原生记录错误：${record.error}`),
       )
     }
 
-    /** Recent native compaction, handoff continuation, diagnostics and engine ownership. */
+    /** 最近一次原生压缩, handoff continuation, diagnostics and engine ownership. */
     function StatusSection(props) {
       const { sessionId, engine, engineApplies, record, continuation, diagnostics, inspectError, inspectLoading } = props
       const reasons = []
@@ -1696,34 +1697,34 @@ window.__ModuleLoader__.load({
       }
       return h(
         Section,
-        { name: 'status', title: 'Recent native compaction' },
-        h('p', { className: 'dsh-bc-caption' }, 'This refresh performs no compaction, LLM call, CLI call, or file write. The status below is projected from real native events and provider usage only.'),
+        { name: 'status', title: '最近一次原生压缩' },
+        h('p', { className: 'dsh-bc-caption' }, '只读展示原生事件与 usage，缺失字段为 unknown。'),
         h('p', { className: 'dsh-bc-note', 'data-bc': 'engine-note' }, engineNote(engine)),
         inspectError !== null && inspectError !== undefined
-          ? h('p', { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'inspect-error' }, `${inspectError}. The form remains editable; only the read-only status is affected.`)
+          ? h('p', { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'inspect-error' }, `${inspectError}。表单仍可编辑，仅只读状态受影响。`)
           : null,
         sessionId === ''
-          ? h('p', { className: 'dsh-bc-unknown', 'data-bc': 'status-empty' }, 'No session selected. Select one above to inspect its recent native compaction; plugin state is shown without a session.')
+          ? h('p', { className: 'dsh-bc-unknown', 'data-bc': 'status-empty' }, '尚未选择会话；选择后查看最近原生压缩记录。')
           : inspectLoading
-            ? h('p', { className: 'dsh-bc-note', role: 'status' }, 'Reading the session’s native compaction status…')
+            ? h('p', { className: 'dsh-bc-note', role: 'status' }, '正在读取原生压缩状态…')
             : h(LastCompaction, {
                 record,
                 emptyText: engineApplies === false
-                  ? 'No recorded compaction was found in this session’s native events.'
-                  : 'No compaction has been recorded for this session yet.',
+                  ? '该会话原生事件中未找到压缩记录。'
+                  : '该会话暂无压缩记录。',
               }),
         continuation === null || continuation === undefined
           ? null
           : h(
               'div',
               { className: 'dsh-bc-continuation', 'data-bc': 'handoff-continuation', 'data-status': continuation.status },
-              h('h4', { className: 'dsh-bc-h4' }, 'Handoff continuation'),
+              h('h4', { className: 'dsh-bc-h4' }, 'Handoff 续作'),
               h(
                 'p',
                 { className: 'dsh-bc-strong' },
                 continuation.status === 'scheduled'
-                  ? 'Scheduled — one ordinary same-session continuation was queued by a successful live manual handoff.'
-                  : 'Skipped — no automatic continuation was scheduled; waiting for the user or a gate to clear.',
+                  ? '已调度：本次手动 Handoff 成功后，排入一次同会话普通续作。'
+                  : '已跳过：未调度自动续作，等待用户或阻塞条件解除。',
               ),
               Array.isArray(continuation.blockers) && continuation.blockers.length > 0
                 ? h(
@@ -1732,13 +1733,13 @@ window.__ModuleLoader__.load({
                     continuation.blockers.map((blocker, index) => h('li', { key: `${index}-${blocker}` }, String(blocker))),
                   )
                 : null,
-              h('p', { className: 'dsh-bc-caption' }, 'Replay, page refresh, or plugin reload cannot schedule another continuation.'),
+              h('p', { className: 'dsh-bc-caption' }, '历史重放、刷新页面或重载插件不会再次调度续作。'),
             ),
         reasons.length > 0
           ? h(
               'div',
               { className: 'dsh-bc-diagnostics', 'data-bc': 'diagnostics' },
-              h('h4', { className: 'dsh-bc-h4' }, 'Diagnostics'),
+              h('h4', { className: 'dsh-bc-h4' }, '诊断原因'),
               h(ReasonList, { reasons }),
             )
           : null,
@@ -1757,7 +1758,7 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'dsh-bc-session-row' },
-          h('label', { htmlFor: id, className: 'dsh-bc-label' }, 'Inspect session'),
+          h('label', { htmlFor: id, className: 'dsh-bc-label' }, '诊断会话'),
           h(
             'select',
             {
@@ -1767,9 +1768,9 @@ window.__ModuleLoader__.load({
               value: selectedId,
               onChange: (event) => onSelect(event.target.value),
             },
-            h('option', { value: '' }, 'Plugin state only (no session)'),
+            h('option', { value: '' }, '仅插件状态（不选会话）'),
             entries.map((entry) =>
-              h('option', { key: entry.id, value: entry.id }, `${entry.title}${entry.running ? ' · running' : ''} — ${entry.id}`),
+              h('option', { key: entry.id, value: entry.id }, `${entry.title}${entry.running ? ' · 运行中' : ''} — ${entry.id}`),
             ),
           ),
         ),
@@ -1777,14 +1778,14 @@ window.__ModuleLoader__.load({
           'p',
           { className: 'dsh-bc-caption' },
           !listAvailable
-            ? 'Session list unavailable; showing plugin state only.'
+            ? '会话列表不可用，仅显示插件状态。'
             : listError !== null && listError !== undefined
-              ? `Session list unavailable (${typeof listError.message === 'string' ? listError.message : 'error'}); showing plugin state only.`
+              ? `会话列表不可用（${typeof listError.message === 'string' ? listError.message : 'error'}），仅显示插件状态。`
               : entries.length === 0
                 ? phase === 'pending'
-                  ? 'Loading sessions…'
-                  : 'No sessions are available; showing plugin state only.'
-                : 'The selected session is used only for read-only inspection. No compaction, LLM, CLI, or file write is triggered.',
+                  ? '正在加载会话…'
+                  : '暂无会话，仅显示插件状态。'
+                : '只读诊断，不触发压缩、LLM、CLI 或文件写入。',
         ),
         h(
           'div',
@@ -1792,7 +1793,7 @@ window.__ModuleLoader__.load({
           h(
             'button',
             { type: 'button', className: 'dsh-bc-btn', onClick: onRefresh, disabled: refresh === true },
-            refresh === true ? 'Reading…' : 'Refresh read-only data',
+            refresh === true ? '读取中…' : '刷新诊断',
           ),
         ),
       )
@@ -1802,55 +1803,29 @@ window.__ModuleLoader__.load({
 
     function ActiveConfigBanner(props) {
       const active = props.activeConfig
-      const requiresReload = props.requiresReload
       const unknown = active === null || active === undefined
-      const activeRoute =
-        unknown
-          ? 'unknown'
-          : active.summarizationProvider === '' && active.summarizationModel === ''
-            ? 'follow session'
-            : `${active.summarizationProvider}/${active.summarizationModel}`
-      const activeEffort = unknown
-        ? 'unknown'
-        : active.mode === 'native'
-          ? 'not applicable (native decides)'
-          : active.reasoningEffort === ''
-            ? 'model default'
-            : active.reasoningEffort
-      const activeCache = unknown
-        ? 'unknown'
-        : active.mode === 'native'
-          ? 'not applicable (native decides)'
-          : active.cachePriority === true
-            ? 'on'
-            : 'off'
-      return h(
-        'div',
-        {
-          className: `dsh-bc-banner${requiresReload === true ? ' dsh-bc-banner-warn' : ''}`,
-          'data-bc': 'active-config',
-          'data-requires-reload': requiresReload === true ? 'true' : requiresReload === false ? 'false' : 'unknown',
-        },
-        h(
-          'p',
-          { className: 'dsh-bc-banner-title' },
-          requiresReload === true
-            ? 'Saved configuration differs from the active engine snapshot — reload the profile to apply.'
-            : requiresReload === false
-              ? 'Saved values match the active engine snapshot.'
-              : 'Active engine snapshot comparison is unavailable.',
-        ),
-        h(
-          'p',
-          { className: 'dsh-bc-caption' },
-          unknown
-            ? 'Active engine configuration: unknown (read-only inspection unavailable).'
-            : `Active engine configuration: mode ${active.mode}; summary model ${activeRoute}; effort ${activeEffort}; cache priority ${activeCache}; threshold ratio ${active.thresholdRatio}; retain ${active.retainTokens !== null ? `${active.retainTokens} tokens` : `${active.retainRatio} ratio`}.`,
-        ),
-        h(
-          'p',
-          { className: 'dsh-bc-caption' },
-          'Editing here changes the saved profile only. Restart the DSH process (reload the profile) to take a new engine snapshot; refreshing the web page does not reload the engine.',
+      const status = props.requiresReload === true
+        ? '已保存配置待重载 profile'
+        : props.requiresReload === false ? '已保存配置与运行快照一致' : '运行快照 unknown，暂无法比较'
+      return h('div', {
+        className: 'dsh-bc-banner' + (props.requiresReload === true ? ' dsh-bc-banner-warn' : ''),
+        'data-bc': 'active-config',
+        'data-requires-reload': props.requiresReload === true ? 'true' : props.requiresReload === false ? 'false' : 'unknown',
+      },
+        h('p', { className: 'dsh-bc-banner-title' },
+          (props.dirty ? '有未保存草稿 · ' : '') + status + (unknown ? '' : ' · 运行：' + (MODE_META[active.mode]?.label ?? active.mode))),
+        h('details', { className: 'dsh-bc-explanation' },
+          h('summary', null, '运行快照与生效方式'),
+          unknown ? h('p', { className: 'dsh-bc-caption' }, 'activeConfig unknown（只读诊断未返回）。')
+            : h('div', { className: 'dsh-bc-status-grid' },
+              h(Row, { label: '运行模式', value: active.mode }),
+              h(Row, { label: '运行摘要路由', value: active.summarizationProvider || active.summarizationModel ? active.summarizationProvider + '/' + active.summarizationModel : '跟随会话' }),
+              h(Row, { label: '运行思考强度', value: active.mode === 'native' ? NATIVE_NOT_APPLICABLE : active.reasoningEffort || '摘要模型默认值' }),
+              h(Row, { label: '运行缓存优先', value: active.mode === 'native' ? NATIVE_NOT_APPLICABLE : active.cachePriority ? '开启' : '关闭' }),
+              h(Row, { label: '运行阈值', value: ratioText(active.thresholdRatio) }),
+              h(Row, { label: '运行保留量', value: typeof active.retainTokens === 'number' ? tokensText(active.retainTokens) : ratioText(active.retainRatio) }),
+            ),
+          h('p', { className: 'dsh-bc-caption' }, '编辑只是草稿；保存走宿主 revision / CAS。保存后重启 DSH / 重载 profile 才应用，刷新网页不重载引擎。'),
         ),
       )
     }
@@ -1865,7 +1840,7 @@ window.__ModuleLoader__.load({
           h(
             'p',
             { key: 'saved', className: 'dsh-bc-ok', role: 'status', 'data-bc': 'save-saved' },
-            'Saved — reload profile. Restart the DSH process (reload the profile) to apply. Refreshing the web page does not reload the engine; the active snapshot above stays unchanged until then.',
+            '已保存，需重载 profile。重启 DSH 才更新运行快照，刷新网页不生效。',
           ),
         )
       }
@@ -1874,7 +1849,7 @@ window.__ModuleLoader__.load({
           h(
             'p',
             { key: 'rejected', className: 'dsh-bc-error', role: 'alert', 'data-bc': 'save-rejected' },
-            'The Host refused the save (usually a revision conflict or a rejected value). The draft is kept and was not applied. Reload host values, compare, and retry; this page will not silently overwrite a newer configuration.',
+            '宿主拒绝保存（revision 冲突或值被拒绝）。草稿保留且未应用；请重新读取宿主值并对比，不会静默覆盖。',
           ),
         )
       }
@@ -1883,7 +1858,7 @@ window.__ModuleLoader__.load({
           h(
             'p',
             { key: 'transport', className: 'dsh-bc-error', role: 'alert', 'data-bc': 'save-transport' },
-            `The save request failed: ${saveState.message}. Nothing was saved; your draft is kept.`,
+            `保存请求失败：${saveState.message}。未保存，草稿已保留。`,
           ),
         )
       }
@@ -1893,7 +1868,7 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { key: 'invalid', className: 'dsh-bc-error', role: 'alert', 'data-bc': 'save-invalid' },
-            h('p', null, 'Fix the highlighted fields before saving:'),
+            h('p', null, '请先修正标记字段：'),
             h('ul', null, list.map((entry) => h('li', { key: entry }, entry))),
           ),
         )
@@ -1909,26 +1884,26 @@ window.__ModuleLoader__.load({
             ? h(
                 'p',
                 { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'revision-conflict' },
-                'Configuration changed on the Host while this draft was open. Saving uses one expected revision, so it cannot silently overwrite the newer configuration. Reload host values to compare and continue.',
+                '宿主配置已更新，当前草稿存在 revision 冲突；请重新读取宿主值并对比，不会覆盖较新配置。',
               )
             : null,
           !writable
-            ? h('p', { className: 'dsh-bc-note', 'data-bc': 'read-only' }, 'Read-only: the Host document does not accept writes. Values remain visible and inspect stays usable.')
+            ? h('p', { className: 'dsh-bc-note', 'data-bc': 'read-only' }, '只读：宿主不接受写入；仍可查看设置与诊断。')
             : null,
           h(
             'p',
             { className: 'dsh-bc-caption', 'data-bc': 'revision' },
-            `Draft based on revision ${revision === null || revision === undefined ? 'unknown' : String(revision)}; one expected revision is sent per save.`,
+            `草稿基于 revision ${revision === null || revision ===undefined ? 'unknown' : String(revision)}；每次保存只提交一个预期 revision。`,
           ),
         ),
         h(
           'div',
           { className: 'dsh-bc-actions' },
-          h('button', { type: 'button', className: 'dsh-bc-btn', onClick: onReload, disabled: savingNow }, 'Reload host values'),
+          h('button', { type: 'button', className: 'dsh-bc-btn', onClick: onReload, disabled: savingNow }, '重新读取宿主值'),
           h(
             'button',
             { type: 'button', className: 'dsh-bc-btn dsh-bc-btn-primary', onClick: onSave, disabled: saveDisabled, 'data-bc': 'save-button' },
-            savingNow ? 'Saving…' : 'Save settings',
+            savingNow ? '保存中…' : '保存设置',
           ),
         ),
       )
@@ -2113,8 +2088,8 @@ window.__ModuleLoader__.load({
       const title = h(
         'div',
         { className: 'dsh-bc-page-head', key: 'head' },
-        h('h2', { className: 'dsh-bc-title' }, 'Compaction'),
-        h('p', { className: 'dsh-bc-caption' }, 'Choose how this plugin summarizes history. The read-only panel below shows what the running engine can prove for one session.'),
+        h('h2', { className: 'dsh-bc-title' }, '上下文压缩'),
+        h('p', { className: 'dsh-bc-caption' }, '选择压缩策略并编辑草稿；保存后需重载 profile 生效。'),
       )
 
       if (formStatus === 'missing' || formStatus === 'loading') {
@@ -2123,7 +2098,7 @@ window.__ModuleLoader__.load({
           { className: 'dsh-bc-page', 'data-better-compact': 'page' },
           pageStyle,
           title,
-          h('div', { className: 'dsh-bc-section' }, h('p', { className: 'dsh-bc-note', role: 'status' }, formStatus === 'loading' ? 'Reading configuration…' : 'Waiting for the Host configuration form…')),
+          h('div', { className: 'dsh-bc-section' }, h('p', { className: 'dsh-bc-note', role: 'status' }, formStatus === 'loading' ? '正在读取配置…' : '等待宿主配置表单…')),
         )
       }
 
@@ -2136,8 +2111,8 @@ window.__ModuleLoader__.load({
           h(
             'div',
             { className: 'dsh-bc-section' },
-            h('p', { className: 'dsh-bc-note', 'data-bc': 'form-unavailable' }, 'The Host does not expose an editable configuration form for this row. No values are invented here.'),
-            h(ActiveConfigBanner, { activeConfig, requiresReload }),
+            h('p', { className: 'dsh-bc-note', 'data-bc': 'form-unavailable' }, '宿主未提供可编辑表单，不填造默认值。'),
+            h(ActiveConfigBanner, { activeConfig, requiresReload, dirty }),
           ),
           h(StatusSection, {
             sessionId: selectedId,
@@ -2158,7 +2133,7 @@ window.__ModuleLoader__.load({
         preview !== null && preview !== undefined && typeof preview.reason === 'string' && preview.reason.length > 0
           ? preview.reason
           : null
-      // Diagnostics render in the status section; the budget panel shows the
+      // 诊断原因 render in the status section; the budget panel shows the
       // preview reason only when it is not already one of those diagnostics, so
       // the same backend message never appears twice.
       const budgetReasons = previewReason !== null && !diagnostics.includes(previewReason) ? [previewReason] : []
@@ -2168,7 +2143,7 @@ window.__ModuleLoader__.load({
         { className: 'dsh-bc-page', 'data-better-compact': 'page' },
         pageStyle,
         title,
-        h(ActiveConfigBanner, { activeConfig, requiresReload }),
+        h(ActiveConfigBanner, { activeConfig, requiresReload, dirty }),
         h(ModeCards, {
           value: draft === null ? '' : draft.mode,
           activeMode,
@@ -2190,6 +2165,7 @@ window.__ModuleLoader__.load({
           onModel: (value) => updateDraft(value === '' ? { provider: '', model: '' } : { model: value }),
         }),
         h(BudgetSection, {
+          stateValue: state.value,
           draft: draft ?? draftFromValue({}),
           activeConfig,
           budget,
@@ -2263,7 +2239,7 @@ window.__ModuleLoader__.load({
     // ── host theme styles ─────────────────────────────────────────────────
 
     const STYLE = `
-.dsh-bc-page{display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;min-width:0}
+.dsh-bc-page{display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;min-width:0;container-type:inline-size;container-name:better-compact;overflow-wrap:anywhere}
 .dsh-bc-page-head{display:flex;flex-direction:column;gap:2px}
 .dsh-bc-title{margin:0;font-size:16px;font-weight:600;line-height:24px}
 .dsh-bc-section{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1);padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
@@ -2279,8 +2255,8 @@ window.__ModuleLoader__.load({
 .dsh-bc-ok{color:var(--dsw-alias-state-success-primary);margin:0;font-size:12px;line-height:18px}
 .dsh-bc-strong{color:var(--dsw-alias-label-primary);font-weight:500}
 .dsh-bc-mono{font-variant-numeric:tabular-nums;font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
-.dsh-bc-modes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
-.dsh-bc-mode{position:relative;display:flex;flex-direction:column;gap:7px;padding:12px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1);cursor:pointer;min-width:0;transition:background-color 120ms ease,border-color 120ms ease}
+.dsh-bc-modes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
+.dsh-bc-mode{position:relative;display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1);cursor:pointer;min-width:0;transition:background-color 120ms ease,border-color 120ms ease}
 .dsh-bc-mode:hover{background:var(--dsw-alias-interactive-bg-hover)}
 .dsh-bc-mode:active{background:var(--dsw-alias-interactive-bg-active)}
 .dsh-bc-mode:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
@@ -2296,8 +2272,8 @@ window.__ModuleLoader__.load({
 .dsh-bc-mode-description{margin:0;color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:17px;min-height:52px}
 .dsh-bc-mode-pending{margin:0;font-size:11px;line-height:16px;color:var(--dsw-alias-label-primary);border-left:2px solid var(--dsw-alias-state-business-primary);padding-left:6px}
 .dsh-bc-diagram-wrap{min-width:0}
-.dsh-bc-diagram{display:block;width:100%;height:auto;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-diagram text{fill:currentColor;font-family:inherit;font-size:9px}
+.dsh-bc-diagram{display:block;width:100%;max-width:180px;height:auto;margin:0 auto;color:var(--dsw-alias-label-secondary)}
+.dsh-bc-diagram text{fill:currentColor;font-family:inherit;font-size:11px}
 .dsh-bc-diagram .dsh-bc-diagram-note{fill:var(--dsw-alias-label-tertiary);font-size:8px}
 .dsh-bc-diagram .dsh-bc-node{fill:var(--dsw-alias-bg-layer-2);stroke:var(--dsw-alias-border-l3);stroke-width:1}
 .dsh-bc-diagram .dsh-bc-node-strong{fill:var(--dsw-alias-bg-layer-3);stroke:var(--dsw-alias-border-l4);stroke-width:1}
@@ -2383,8 +2359,14 @@ window.__ModuleLoader__.load({
 .dsh-bc-banner{display:flex;flex-direction:column;gap:4px;border-left:2px solid var(--dsw-alias-state-business-primary);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);padding:8px 10px}
 .dsh-bc-banner-warn{border-left-color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-state-warn-tertiary)}
 .dsh-bc-banner-title{margin:0;font-size:12px;line-height:18px;font-weight:500}
-@media (max-width:760px){.dsh-bc-modes{grid-template-columns:1fr}.dsh-bc-mode-description{min-height:0}.dsh-bc-diagram{max-width:420px;margin:0 auto}}
-@media (max-width:600px){.dsh-bc-grid,.dsh-bc-status-grid{grid-template-columns:1fr}}
+.dsh-bc-strategy-foot{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:8px}
+.dsh-bc-explanation{min-width:0;font-size:12px;line-height:18px}
+.dsh-bc-explanation>summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}
+.dsh-bc-explanation[open]>summary{margin-bottom:6px}
+.dsh-bc-explanation>summary:focus-visible{outline:2px solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
+.dsh-bc-explanation .dsh-bc-caption+.dsh-bc-caption{margin-top:4px}
+@container better-compact (max-width:634px){.dsh-bc-modes{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.dsh-bc-mode{padding:8px;gap:6px}.dsh-bc-mode-title{font-size:12px}.dsh-bc-mode-description{font-size:11px;line-height:15px;min-height:45px}.dsh-bc-diagram{max-width:180px}.dsh-bc-grid,.dsh-bc-status-grid{grid-template-columns:1fr}}
+@container better-compact (max-width:560px){.dsh-bc-modes{grid-template-columns:1fr}.dsh-bc-mode-description{min-height:0}.dsh-bc-section{padding:12px}.dsh-bc-row{gap:8px}.dsh-bc-row-label,.dsh-bc-row-value{flex:1;min-width:0}.dsh-bc-session-row .dsh-bc-input{flex-basis:100%}}
 @media (prefers-reduced-motion:reduce){.dsh-bc-page *{transition:none!important;animation:none!important}.dsh-bc-mode:active{background:var(--dsw-alias-bg-layer-1)}}
 `
 

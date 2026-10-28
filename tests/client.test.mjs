@@ -287,6 +287,87 @@ async function unmount(tree) {
 
 // ── tests ─────────────────────────────────────────────────────────────────
 
+test('strategy arrows touch their actual source and destination boxes', async () => {
+  const { tree } = await renderPage()
+  const required = {
+    native: [['history', 'summary'], ['recent', 'tail'], ['summary', 'checkpoint']],
+    goal: [['history', 'summary'], ['authority', 'summary']],
+    handoff: [['history', 'file'], ['file', 'summary'], ['summary', 'continuation']],
+  }
+  for (const [mode, pairs] of Object.entries(required)) {
+    const svg = hostNodes(tree, (p, n) => n.type === 'svg' && p['data-diagram'] === mode)[0]
+    const nodes = svg.findAll((n) => n.type === 'rect' && n.props['data-node'])
+    const edges = svg.findAll((n) => n.type === 'path' && n.props['data-from'])
+    const touches = (point, box) => {
+      const [x, y] = point
+      const { x: bx, y: by, width, height } = box.props
+      return x >= bx && x <= bx + width && y >= by && y <= by + height &&
+        (x === bx || x === bx + width || y === by || y === by + height)
+    }
+    for (const [from, to] of pairs) {
+      const edge = edges.find((n) => n.props['data-from'] === from && n.props['data-to'] === to)
+      assert.ok(edge, mode + ': missing semantic connection ' + from + ' → ' + to)
+      const points = edge.props.d.match(/-?\d+(?:\.\d+)?/g).map(Number)
+      const source = nodes.find((n) => n.props['data-node'] === from)
+      const target = nodes.find((n) => n.props['data-node'] === to)
+      assert.ok(touches(points.slice(0, 2), source), mode + ': source is disconnected')
+      assert.ok(touches(points.slice(-2), target), mode + ': arrow lands outside ' + to)
+      assert.ok(edge.props.markerEnd, 'direction must be visible')
+    }
+    assert.ok(nodes.some((n) => n.props['data-node'] === 'fixed'), 'fixed prefix is identified separately')
+    const texts = svg.findAll((n) => n.type === 'text')
+    assert.ok(texts.every((n) => String(n.children.join('')).length <= 18), 'diagram labels remain concise')
+  }
+  await unmount(tree)
+})
+
+test('inherited retention identifies the active source without promising a new default', async () => {
+  const { tree, calls, mutateCalls } = await renderPage({
+    handler: router({ plugin: pluginPayload({ requiresReload: true, activeConfig: activeConfig({ retainRatio: 0.23 }) }) }),
+  })
+  const input = byName(tree, 'retainRatio')
+  assert.equal(input.props.value, '')
+  assert.equal(input.props.placeholder, '0.23')
+  const hint = byData(tree, 'retention-source')[0]
+  assert.ok(hint, 'an empty inherited value must have a visible source')
+  assert.match(hint.children.join(''), /23%.*activeConfig/)
+  assert.match(hint.children.join(''), /重载.*重新解析/)
+  await change(tree, input, '0.19')
+  assert.match(byData(tree, 'retention-source')[0].children.join(''), /草稿.*19%/)
+  assert.equal(mutateCalls.length, 0)
+  assert.equal(calls.length, 2, 'draft edits do not fetch or invoke an LLM')
+  await unmount(tree)
+  const unknown = await renderPage({ handler: router({ plugin: pluginPayload({ activeConfig: null }) }) })
+  assert.match(byData(unknown.tree, 'retention-source')[0].children.join(''), /unknown.*未返回/)
+  await unmount(unknown.tree)
+})
+
+test('model picker changes provider/model atomically and preserves incompatible effort', async () => {
+  const { tree, calls, mutateCalls } = await renderPage({
+    value: formValue({ summarizationProvider: 'old', summarizationModel: 'custom', reasoningEffort: 'ultra' }),
+    handler: router({ models: modelsPayload() }),
+  })
+  const picker = byName(tree, 'summaryRoute')
+  assert.equal(picker.type, 'select')
+  const choice = picker.findAllByType('option').find((n) => n.children.join('') === 'p / m')
+  assert.ok(choice)
+  await change(tree, picker, choice.props.value)
+  assert.equal(byName(tree, 'summarizationProvider').props.value, 'p')
+  assert.equal(byName(tree, 'summarizationModel').props.value, 'm')
+  assert.equal(byName(tree, 'reasoningEffort').props.value, 'ultra')
+  assert.ok(byName(tree, 'reasoningEffort').findAllByType('option').some((n) => n.props.value === 'ultra'))
+  assert.equal(byData(tree, 'save-button')[0].props.disabled, true)
+  await change(tree, byName(tree, 'reasoningEffort'), 'high')
+  assert.equal(byData(tree, 'save-button')[0].props.disabled, false)
+  await change(tree, byName(tree, 'summaryRoute'), '')
+  assert.equal(byName(tree, 'summarizationProvider').props.value, '')
+  assert.equal(byName(tree, 'summarizationModel').props.value, '')
+  assert.equal(byName(tree, 'reasoningEffort').props.value, 'high')
+  assert.equal(mutateCalls.length, 0)
+  assert.equal(calls.length, 2)
+  await unmount(tree)
+})
+
 test('client module identity, exports and slot registration stay stable', () => {
   const { entry, exports } = loadClient()
   assert.equal(entry.id, 'dsh-better-compact')
@@ -345,7 +426,7 @@ test('summary slot renders the stable one-line description', async () => {
   await act(async () => {
     tree = TestRenderer.create(h(exports.BetterCompactConfigEntry, { view: 'summary' }))
   })
-  assert.match(json(tree), /Native, goal-aware, or file-handoff/)
+  assert.match(json(tree), /原生 \/ Goal 增强 \/ 文件 Handoff/)
   await unmount(tree)
 })
 
@@ -369,17 +450,17 @@ test('page renders in overview order with three distinct strategy diagrams', asy
   const nativeLabel = diagrams[0].props['aria-label']
   const goalLabel = diagrams[1].props['aria-label']
   const handoffLabel = diagrams[2].props['aria-label']
-  assert.match(nativeLabel, /native summary/)
-  assert.match(nativeLabel, /recent verbatim/i)
-  assert.match(nativeLabel, /native checkpoint/)
-  assert.match(goalLabel, /authoritative goal and todo/)
-  assert.match(goalLabel, /goal, constraints, progress/)
-  assert.match(goalLabel, /recent verbatim/i)
-  assert.match(handoffLabel, /temporary Markdown handoff file/)
-  assert.match(handoffLabel, /native events store the same handoff body/i)
-  assert.match(handoffLabel, /same-session continuation/)
-  assert.match(handoffLabel, /Recent verbatim messages are retained/)
-  assert.match(json(tree), /Strategy schematic, not a live token flow or cache hit rate/)
+  assert.match(nativeLabel, /原生摘要/)
+  assert.match(nativeLabel, /近期原文/)
+  assert.match(nativeLabel, /原生 checkpoint/)
+  assert.match(goalLabel, /只读权威 Goal \/ Todo/)
+  assert.match(goalLabel, /目标、约束、进展、下一步/)
+  assert.match(goalLabel, /近期原文/)
+  assert.match(handoffLabel, /本次临时交接文件/)
+  assert.match(handoffLabel, /正文写入原生事件/)
+  assert.match(handoffLabel, /同会话继续/)
+  assert.match(handoffLabel, /近期原文保留/)
+  assert.match(json(tree), /策略示意，非实时 token 流或缓存命中率/)
   assert.deepEqual(
     calls.map((call) => call.url).sort(),
     ['/better-compact/api/inspect', '/better-compact/api/models'],
@@ -436,9 +517,9 @@ test('selected mode differing from the active snapshot is flagged for a profile 
   )[0]
   const pending = hostNodes(tree, (props, node) => node.props['data-bc-mode-pending'] === 'true')
   assert.equal(pending.length, 1)
-  assert.match(json(tree), /reload the profile to apply/)
+  assert.match(json(tree), /保存后重载 profile 生效/)
   assert.equal(goalCard.props['aria-checked'], true)
-  assert.match(json(tree), /Saved configuration differs from the active engine snapshot/)
+  assert.match(json(tree), /已保存配置待重载 profile/)
   const banner = byData(tree, 'active-config')[0]
   assert.equal(banner.props['data-requires-reload'], 'true')
   await unmount(tree)
@@ -461,8 +542,8 @@ test('native mode disables enhanced effort and cache controls but keeps saved va
   assert.equal(effort.props.value, 'ultra')
   assert.equal(cache.props.disabled, true)
   assert.equal(cache.props.checked, true)
-  assert.match(json(tree), /not applicable: the native implementation decides/)
-  assert.match(json(tree), /The saved value is kept for switching back/)
+  assert.match(json(tree), /不适用：由原生实现决定/)
+  assert.match(json(tree), /保留当前值供切回增强模式/)
   assert.equal(byName(tree, 'summarizationProvider').props.disabled, false)
   assert.equal(hostNodes(tree, (props) => props['data-bc-error'] === 'reasoningEffort').length, 0)
 
@@ -472,7 +553,7 @@ test('native mode disables enhanced effort and cache controls but keeps saved va
   assert.equal(byName(tree, 'reasoningEffort').props.value, 'ultra')
   assert.equal(byName(tree, 'cachePriority').props.disabled, false)
   assert.equal(hostNodes(tree, (props) => props['data-bc-error'] === 'reasoningEffort').length, 1)
-  assert.match(json(tree), /not advertised by p\/m/)
+  assert.match(json(tree), /模型 p\/m 未声明支持思考强度/)
   await unmount(tree)
 })
 
@@ -483,11 +564,11 @@ test('saved model and effort values stay visible and are marked when outside cap
   })
   assert.equal(byName(legacy.tree, 'summarizationProvider').props.value, 'legacy')
   assert.equal(byName(legacy.tree, 'summarizationModel').props.value, 'retired')
-  assert.match(json(legacy.tree), /not in the host’s allowed candidate list/)
-  assert.match(json(legacy.tree), /The saved value is kept/)
+  assert.match(json(legacy.tree), /不在宿主候选列表中/)
+  assert.match(json(legacy.tree), /当前值已保留/)
   assert.ok(byData(legacy.tree, 'route-warning')[0])
   await change(legacy.tree, byName(legacy.tree, 'thresholdRatio'), '0.7')
-  await clickButton(legacy.tree, 'Save settings')
+  await clickButton(legacy.tree, '保存设置')
   await flush()
   assert.equal(legacy.mutateCalls.length, 1, 'the candidate warning must not block a save')
   await unmount(legacy.tree)
@@ -503,8 +584,8 @@ test('saved model and effort values stay visible and are marked when outside cap
     (props) => props.value === 'ultra',
   )[0]
   assert.ok(savedOption)
-  assert.match(json(effort.tree), /not advertised by p\/m/)
-  assert.match(json(effort.tree), /saved; not advertised/)
+  assert.match(json(effort.tree), /模型 p\/m 未声明支持思考强度/)
+  assert.match(json(effort.tree), /当前值；未声明支持/)
   await unmount(effort.tree)
 })
 
@@ -522,8 +603,8 @@ test('provider/model clear as a pair and unknown capability is labelled', async 
     value: formValue({ summarizationProvider: 'p', summarizationModel: 'm' }),
     handler: router({ models: { enabled: false, routes: [] } }),
   })
-  assert.match(json(unknown.tree), /Capability unknown for this route/)
-  assert.match(json(unknown.tree), /discovered and currently usable routes are unknown/)
+  assert.match(json(unknown.tree), /此路由能力 unknown/)
+  assert.match(json(unknown.tree), /模型能力与实际可用性 unknown/)
   assert.equal(byName(unknown.tree, 'reasoningEffort').props.value, '')
   await unmount(unknown.tree)
 })
@@ -539,7 +620,7 @@ test('retention form switch clears the other form and saves one pair', async () 
   })
   assert.equal(hostNodes(tree, (props) => props.name === 'retainRatio').length, 0)
   await change(tree, byName(tree, 'retainTokens'), '1000')
-  await clickButton(tree, 'Save settings')
+  await clickButton(tree, '保存设置')
   await flush()
   assert.equal(mutateCalls.length, 1)
   const ops = mutateCalls[0].ops
@@ -582,7 +663,7 @@ test('save sends one atomic mutation with the expected revision and preserves mo
   assert.match(json(tree), /p\/m/)
   assert.match(json(tree), /maxTokens=100/)
 
-  await clickButton(tree, 'Save settings')
+  await clickButton(tree, '保存设置')
   await flush()
   assert.equal(mutateCalls.length, 1)
   const { ops, expectedRevision } = mutateCalls[0]
@@ -607,13 +688,13 @@ test('save sends one atomic mutation with the expected revision and preserves mo
 test('save success asks for a profile reload and sends no write HTTP', async () => {
   const { tree, mutateCalls, calls } = await renderPage()
   await change(tree, byName(tree, 'thresholdRatio'), '0.7')
-  await clickButton(tree, 'Save settings')
+  await clickButton(tree, '保存设置')
   await flush()
   assert.equal(mutateCalls.length, 1)
   const message = byData(tree, 'save-saved')[0]
   assert.ok(message)
-  assert.match(json(tree), /Saved — reload profile/)
-  assert.match(json(tree), /Refreshing the web page does not reload the engine/)
+  assert.match(json(tree), /已保存，需重载 profile/)
+  assert.match(json(tree), /刷新网页不生效/)
   assert.ok(calls.length >= 2)
   assert.ok(calls.every((call) => call.init.method === 'GET'))
   assert.ok(calls.every((call) => call.url.startsWith('/better-compact/api/')))
@@ -633,13 +714,13 @@ test('a host revision change surfaces a conflict instead of silently overwriting
   }
   await first.update(external)
   assert.ok(byData(first.tree, 'revision-conflict')[0])
-  assert.match(json(first.tree), /cannot silently overwrite/)
+  assert.match(json(first.tree), /不会覆盖较新配置/)
   const saveButton = byData(first.tree, 'save-button')[0]
   assert.equal(saveButton.props.disabled, true)
   await click(first.tree, saveButton)
   await flush()
   assert.equal(first.mutateCalls.length, 0)
-  await clickButton(first.tree, 'Reload host values')
+  await clickButton(first.tree, '重新读取宿主值')
   await flush()
   assert.equal(byData(first.tree, 'revision-conflict').length, 0)
   assert.equal(byName(first.tree, 'thresholdRatio').props.value, '0.75')
@@ -649,25 +730,25 @@ test('a host revision change surfaces a conflict instead of silently overwriting
 test('a refused or failed save keeps the draft and never reports success', async () => {
   const refused = await renderPage({ formOptions: { mutateResult: false } })
   await change(refused.tree, byName(refused.tree, 'thresholdRatio'), '0.7')
-  await clickButton(refused.tree, 'Save settings')
+  await clickButton(refused.tree, '保存设置')
   await flush()
   assert.ok(byData(refused.tree, 'save-rejected')[0])
-  assert.match(json(refused.tree), /The draft is kept and was not applied/)
+  assert.match(json(refused.tree), /草稿保留且未应用/)
   assert.equal(byName(refused.tree, 'thresholdRatio').props.value, '0.7')
-  assert.equal(json(refused.tree).includes('Saved — reload profile'), false)
+  assert.equal(json(refused.tree).includes('已保存，需重载 profile'), false)
   await unmount(refused.tree)
 
   const transported = await renderPage({
     formOptions: { mutateError: new Error('socket closed') },
   })
   await change(transported.tree, byName(transported.tree, 'thresholdRatio'), '0.7')
-  await clickButton(transported.tree, 'Save settings')
+  await clickButton(transported.tree, '保存设置')
   await flush()
   const transport = byData(transported.tree, 'save-transport')[0]
   assert.ok(transport)
   assert.match(json(transported.tree), /socket closed/)
   assert.equal(byName(transported.tree, 'thresholdRatio').props.value, '0.7')
-  assert.equal(json(transported.tree).includes('Saved — reload profile'), false)
+  assert.equal(json(transported.tree).includes('已保存，需重载 profile'), false)
   await unmount(transported.tree)
 })
 
@@ -710,11 +791,11 @@ test('budget unknowns stay unknown while measured values, framing and safe cut a
   assert.ok(byData(measured.tree, 'before-label')[0])
   assert.ok(byData(measured.tree, 'after-label')[0])
   assert.ok(byData(measured.tree, 'retention-compare')[0])
-  assert.match(json(measured.tree), /Manual compact \/ context-overflow recovery/)
-  assert.match(json(measured.tree), /not a permanent pin/)
-  assert.match(json(measured.tree), /Safe cut candidate: surface seq 2–9/)
-  assert.match(json(measured.tree), /budget upper-bound estimate/)
-  assert.match(json(measured.tree), /not a prediction of the generated summary length/)
+  assert.match(json(measured.tree), /手动压缩 \/ 上下文超限恢复/)
+  assert.match(json(measured.tree), /不是永久 pin/)
+  assert.match(json(measured.tree), /安全切点候选：surface seq 2–9/)
+  assert.match(json(measured.tree), /预算上界估算/)
+  assert.match(json(measured.tree), /不是生成摘要长度预测/)
   await unmount(measured.tree)
 })
 
@@ -741,11 +822,11 @@ test('no safe cut and budget conflict reasons point at the controls to change', 
   })
   const text = json(tree)
   assert.ok(byData(tree, 'no-safe-cut')[0])
-  assert.match(text, /Capacity too small/)
-  assert.match(text, /Retention conflicts with the trigger/)
-  assert.match(text, /Adjusted|Adjust the summary model|Lower the retention budget|Lower headroomTokens/)
-  assert.match(text, /Fixed prefix \/ retained tail leaves no safe range/)
-  assert.equal((text.match(/Capacity too small/g) ?? []).length, 1)
+  assert.match(text, /模型容量不足/)
+  assert.match(text, /保留预算与触发线冲突/)
+  assert.match(text, /请调整摘要模型|请降低保留预算|请降低 headroomTokens/)
+  assert.match(text, /固定前缀 \/ 近期保留未留出安全区间/)
+  assert.equal((text.match(/模型容量不足/g) ?? []).length, 1)
   await unmount(tree)
 })
 
@@ -753,9 +834,9 @@ test('compaction status distinguishes completed, unknown cache usage and persist
   const sessions = makeSessions({ ids: ['session-1'], byId: { 'session-1': { id: 'session-1', displayTitle: 'One', running: false } } })
   const completed = await renderPage({ sessions, handler: router({ session: sessionPayload() }) })
   assert.ok(byData(completed.tree, 'last-compaction')[0])
-  assert.match(json(completed.tree), /Completed · automatic/)
-  assert.match(json(completed.tree), /Cache usage: unknown/)
-  assert.equal(json(completed.tree).includes('Cache read tokens'), false)
+  assert.match(json(completed.tree), /已完成 · 自动/)
+  assert.match(json(completed.tree), /缓存用量未知（unknown）/)
+  assert.equal(json(completed.tree).includes('缓存读取 token'), false)
   await unmount(completed.tree)
 
   const persistence = await renderPage({
@@ -777,10 +858,10 @@ test('compaction status distinguishes completed, unknown cache usage and persist
       }),
     }),
   })
-  assert.match(json(persistence.tree), /Persistence error · manual/)
+  assert.match(json(persistence.tree), /持久化失败 · 手动/)
   assert.ok(byData(persistence.tree, 'persistence-error')[0])
-  assert.match(json(persistence.tree), /not a clean success and not a full rollback/)
-  assert.match(json(persistence.tree), /Recorded error: flush failed/)
+  assert.match(json(persistence.tree), /并非普通成功，也不是全部回滚/)
+  assert.match(json(persistence.tree), /原生记录错误：flush failed/)
   await unmount(persistence.tree)
 
   const usage = await renderPage({
@@ -795,9 +876,9 @@ test('compaction status distinguishes completed, unknown cache usage and persist
       }),
     }),
   })
-  assert.match(json(usage.tree), /Cache read tokens \(reported\)/)
+  assert.match(json(usage.tree), /缓存读取 token（实测）/)
   assert.match(json(usage.tree), /7 tokens/)
-  assert.match(json(usage.tree), /Cache write tokens \(reported\)/)
+  assert.match(json(usage.tree), /缓存写入 token（实测）/)
   assert.match(json(usage.tree), /3 tokens/)
   await unmount(usage.tree)
 })
@@ -820,9 +901,9 @@ test('handoff continuation and deduplicated diagnostics are shown', async () => 
   })
   const continuation = byData(tree, 'handoff-continuation')[0]
   assert.ok(continuation)
-  assert.match(json(tree), /waiting for the user/)
+  assert.match(json(tree), /等待用户或阻塞条件解除/)
   assert.match(json(tree), /a user question is still pending/)
-  assert.match(json(tree), /Replay, page refresh, or plugin reload cannot schedule another continuation/)
+  assert.match(json(tree), /历史重放、刷新页面或重载插件不会再次调度续作/)
   assert.equal((json(tree).match(/diagnostic one/g) ?? []).length, 1)
   assert.match(json(tree), /diagnostic two/)
   await unmount(tree)
@@ -839,11 +920,11 @@ test('a foreign compaction engine suppresses budget/preview but keeps real recor
     }),
   })
   const text = json(tree)
-  assert.match(text, /different compaction engine/)
+  assert.match(text, /其他压缩引擎/)
   assert.equal(byData(tree, 'budget-window-bar').length, 0)
   assert.equal(byData(tree, 'safe-cut').length, 0)
   assert.ok(byData(tree, 'last-compaction')[0])
-  assert.match(text, /Completed · automatic/)
+  assert.match(text, /已完成 · 自动/)
   assert.ok(byData(tree, 'budget-not-applicable')[0])
   await unmount(tree)
 })
@@ -873,7 +954,7 @@ test('session selection fetches the chosen session, aborts stale requests and st
 
   const empty = await renderPage()
   assert.equal(empty.calls.some((call) => call.url.includes('sessionId=')), false)
-  assert.match(json(empty.tree), /No sessions are available; showing plugin state only\./)
+  assert.match(json(empty.tree), /暂无会话，仅显示插件状态。/)
   assert.ok(byData(empty.tree, 'status-empty')[0])
   await unmount(empty.tree)
 })
@@ -886,10 +967,10 @@ test('inspect failure leaves the form editable and never triggers a write', asyn
     },
   })
   assert.match(json(tree), /session is not visible/)
-  assert.match(json(tree), /form remains editable/)
+  assert.match(json(tree), /表单仍可编辑/)
   const handoff = hostNodes(tree, (props) => props.role === 'radio' && props['data-mode'] === 'handoff')[0]
   await click(tree, handoff)
-  await clickButton(tree, 'Save settings')
+  await clickButton(tree, '保存设置')
   await flush()
   assert.equal(mutateCalls.length, 1)
   assert.equal(mutateCalls[0].ops[0].value, 'handoff')
@@ -908,7 +989,7 @@ test('form loading, unavailable and missing states are explicit', async () => {
       }),
     )
   })
-  assert.match(json(tree), /Reading configuration…/)
+  assert.match(json(tree), /正在读取配置…/)
   await unmount(tree)
 
   await act(async () => {
@@ -919,14 +1000,14 @@ test('form loading, unavailable and missing states are explicit', async () => {
       }),
     )
   })
-  assert.match(json(tree), /The Host does not expose an editable configuration form/)
+  assert.match(json(tree), /宿主未提供可编辑表单/)
   assert.equal(json(tree).includes('mode-cards'), false)
   await unmount(tree)
 
   await act(async () => {
     tree = TestRenderer.create(h(exports.BetterCompactConfigEntry, { view: 'page' }))
   })
-  assert.match(json(tree), /Waiting for the Host configuration form/)
+  assert.match(json(tree), /等待宿主配置表单/)
   await unmount(tree)
 })
 
@@ -939,7 +1020,7 @@ test('page uses host theme tokens, reduced motion and labels every control', asy
   assert.match(css, /var\(--dsw-focus-ring-/)
   assert.match(css, /font-variant-numeric:tabular-nums/)
   assert.match(css, /prefers-reduced-motion:reduce/)
-  assert.match(css, /@media \(max-width:760px\)/)
+  assert.match(css, /@container better-compact \(max-width:560px\)/)
   assert.match(css, /:focus-visible/)
   assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}\b/)
 
