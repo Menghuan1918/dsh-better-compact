@@ -202,7 +202,7 @@ const nativeTemplate = () =>
 
 /** Scripted adapter state shared across boots. */
 const llmState = {
-  contextWindow: 30000,
+  contextWindow: 60000,
   scripted: [],
   compactionCalls: [],
   compactionBehavior: 'ok',
@@ -552,11 +552,19 @@ try {
   const recA = record(ctx, agentA)
   llmState.scripted = [
     () => 'x'.repeat(1200),
-    () => 'y'.repeat(6000),
+    () => 'y'.repeat(35000),
     'turn three response',
   ]
   await runTurn(agentA, recA, 'seed the session')
+  const afterSeedOne = (await inspectHttp(ctx, agentA.id)).json
+  console.log('SMOKE_DIAG seed-1', JSON.stringify({ budget: afterSeedOne.budget, compactions: recA.count('compaction/start') }))
+  assert.equal(afterSeedOne.lastCompaction, null, 'the first seed turn must stay below the trigger')
+  assert.ok(afterSeedOne.budget.currentTokens < afterSeedOne.budget.thresholdTokens, 'first seed history must be below the trigger')
   await runTurn(agentA, recA, 'build more history')
+  const afterSeedTwo = (await inspectHttp(ctx, agentA.id)).json
+  console.log('SMOKE_DIAG seed-2', JSON.stringify({ budget: afterSeedTwo.budget, compactions: recA.count('compaction/start') }))
+  assert.equal(afterSeedTwo.lastCompaction, null, 'the second seed turn must not compact yet')
+  assert.ok(afterSeedTwo.budget.currentTokens >= afterSeedTwo.budget.thresholdTokens, 'second seed history must be above the trigger before the compacting turn')
   assert.equal(recA.count('compaction/start'), 0, 'history must stay below trigger until the third turn')
 
   // Authoritative goal, disarmed in the same synchronous block so the native
@@ -573,9 +581,9 @@ try {
   assert.equal(previewBefore.handoffContinuation, null)
   assert.ok(Array.isArray(previewBefore.diagnostics))
   assert.equal(previewBefore.budget.retainTokens, 100)
-  assert.equal(previewBefore.budget.contextWindow, 30000)
+  assert.equal(previewBefore.budget.contextWindow, 60000)
   assert.equal(previewBefore.budget.summaryMaxTokens, 100)
-  assert.equal(previewBefore.budget.thresholdTokens, 7500)
+  assert.equal(previewBefore.budget.thresholdTokens, 15000)
   assert.equal(typeof previewBefore.budget.currentTokens, 'number')
   assert.ok(
     ['measured', 'estimated'].includes(previewBefore.budget.measurement),
@@ -638,7 +646,7 @@ try {
   const recB = record(ctx, agentB)
   llmState.scripted = [
     () => 'y'.repeat(1200),
-    () => 'z'.repeat(6000),
+    () => 'z'.repeat(35000),
     'turn continues after failure',
     'recovered turn',
     'extra turn',
@@ -1103,8 +1111,8 @@ try {
   const autoHandoff = await createHostAgent(ctx)
   const recAH = record(ctx, autoHandoff)
   llmState.scripted = [
-    () => 'a'.repeat(30000),
-    () => 'a'.repeat(30000),
+    () => 'a'.repeat(50000),
+    () => 'a'.repeat(50000),
     'auto handoff trigger turn',
   ]
   await runTurn(autoHandoff, recAH, 'seed auto handoff')
@@ -1132,8 +1140,8 @@ try {
   assert.notEqual(presetEngine, ctx.compaction, 'the preset engine must not be the host-plane engine')
   assert.equal(presetEngine.activeMode, 'handoff')
   llmState.scripted = [
-    () => 'z'.repeat(30000),
-    () => 'z'.repeat(30000),
+    () => 'z'.repeat(50000),
+    () => 'z'.repeat(50000),
     'preset trigger turn',
   ]
   await runTurn(presetAgent, recPreset, 'seed preset session')
@@ -1188,8 +1196,8 @@ try {
   const nativeAgent = await createHostAgent(ctx)
   const recN = record(ctx, nativeAgent)
   llmState.scripted = [
-    () => 'n'.repeat(30000),
-    () => 'n'.repeat(30000),
+    () => 'n'.repeat(50000),
+    () => 'n'.repeat(50000),
     'native trigger turn',
   ]
   await runTurn(nativeAgent, recN, 'seed native session')
