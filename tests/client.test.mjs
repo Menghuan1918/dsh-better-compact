@@ -469,7 +469,7 @@ test('page renders in overview order with three distinct strategy diagrams', asy
   assert.match(handoffLabel, /正文写入原生事件/)
   assert.match(handoffLabel, /同会话继续/)
   assert.match(handoffLabel, /近期原文保留/)
-  assert.equal(hostNodes(tree, (props, node) => node.type === 'svg').length, 3, 'strategy diagrams remain schematic SVGs')
+  assert.equal(hostNodes(tree, (props) => typeof props['data-diagram'] === 'string').length, 3, 'strategy diagrams remain schematic SVGs')
   assert.deepEqual(
     calls.map((call) => call.url).sort(),
     ['/better-compact/api/inspect', '/better-compact/api/models'],
@@ -522,7 +522,7 @@ test('mode details stay closed, options carry no badges, Home/End wrap the group
   assert.equal(hostNodes(tree, (props) => props['data-bc-selected-tag'] !== undefined).length, 0)
   assert.equal(hostNodes(tree, (props) => props.className === 'dsh-bc-tag').length, 0)
   // Every selectable card includes its diagram without opening the details.
-  assert.equal(hostNodes(tree, (props, node) => node.type === 'svg').length, 3)
+  assert.equal(hostNodes(tree, (props) => typeof props['data-diagram'] === 'string').length, 3)
 
   const radios = hostNodes(tree, (props) => props.role === 'radio')
   const goal = radios.find((node) => node.props['data-mode'] === 'goal')

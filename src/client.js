@@ -557,6 +557,43 @@ window.__ModuleLoader__.load({
         h('summary', null, props.title), h('div', { className: 'dsh-bc-explanation-body' }, props.children))
     }
 
+    /** A compact help popover for rules that would otherwise become body copy. */
+    function Help(props) {
+      const label = props.label ?? '说明'
+      return h(
+        'details',
+        { className: 'dsh-bc-help' },
+        h(
+          'summary',
+          { 'aria-label': label, title: label },
+          h('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, 'aria-hidden': true },
+            h('circle', { cx: 12, cy: 12, r: 9 }), h('path', { d: 'M9.7 9.2a2.5 2.5 0 1 1 3.4 2.3c-.7.3-1.1.9-1.1 1.7v.3M12 17h.01' })),
+        ),
+        h('div', { className: 'dsh-bc-helpBody' }, props.children),
+      )
+    }
+
+    /** Native select with a theme-aware chevron; the closed control carries the design. */
+    function Select(props) {
+      const { id, name, value, disabled, onChange, children, ariaLabel, ariaInvalid, describedBy } = props
+      return h(
+        'div',
+        { className: 'dsh-bc-select' },
+        h('select', {
+          id,
+          name,
+          value,
+          disabled,
+          onChange,
+          'aria-label': ariaLabel,
+          'aria-invalid': ariaInvalid,
+          'aria-describedby': describedBy,
+        }, children),
+        h('svg', { className: 'dsh-bc-chevron', width: 12, height: 12, viewBox: '0 0 12 12', fill: 'none', 'aria-hidden': true },
+          h('path', { d: 'm3 4.5 3 3 3-3', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round' })),
+      )
+    }
+
     function Metric(props) {
       return h('div', { className: 'dsh-bc-metric' + (props.primary ? ' dsh-bc-metric-primary' : '') }, h('span', { className: 'dsh-bc-caption' }, props.label),
         h('span', { className: 'dsh-bc-metric-value dsh-bc-mono', 'data-bc': props.name }, props.value))
@@ -692,24 +729,23 @@ window.__ModuleLoader__.load({
             }),
           ),
         ),
-        h('div', { className: 'dsh-bc-strategy-foot' },
-
-          h('details', { className: 'dsh-bc-explanation', 'data-bc': 'mode-details' }, h('summary', null, '模式说明'),
-            MODES.map((mode) => h('p', { key: mode, className: 'dsh-bc-caption' }, MODE_META[mode].label + '：' + MODE_META[mode].caption))),
-        ),
+        h('details', { className: 'dsh-bc-modeDetails', 'data-bc': 'mode-details' },
+          h('summary', null, '策略说明'),
+          MODES.map((mode) => h('p', { key: mode, className: 'dsh-bc-caption' }, MODE_META[mode].label + '：' + MODE_META[mode].caption))),
       )
     }
 
-    /** Checkbox row with a label and explanation. */
+    /** A custom switch backed by a hidden checkbox (native semantics, non-native chrome). */
     function Toggle(props) {
       const rawId = useId()
       const id = `dsh-bc-toggle-${props.name}-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`
+      const hintId = props.help === undefined || props.help === null ? undefined : id + '-hint'
       return h(
         'div',
-        { className: 'dsh-bc-field' },
+        { className: 'dsh-bc-toggle' + (props.block ? ' dsh-bc-toggle-block' : '') },
         h(
           'label',
-          { className: 'dsh-bc-check', htmlFor: id },
+          { className: 'dsh-bc-switch', htmlFor: id },
           h('input', {
             id,
             name: props.name,
@@ -717,15 +753,15 @@ window.__ModuleLoader__.load({
             checked: props.checked === true,
             disabled: props.disabled === true,
             onChange: (event) => props.onChange(event.target.checked),
-            'aria-describedby': undefined,
+            'aria-describedby': hintId,
           }),
-          h('span', null, h('span', { className: 'dsh-bc-label' }, props.label)),
+          h('span', { className: 'dsh-bc-switchTrack', 'aria-hidden': true }, h('span', { className: 'dsh-bc-switchThumb' })),
+          h('span', { className: 'dsh-bc-switchLabel' }, props.label),
         ),
-        props.help === undefined || props.help === null ? null : h('p', { className: 'dsh-bc-help' }, props.help),
+        hintId === undefined ? null : h('p', { id: hintId, className: 'dsh-bc-helpText' }, props.help),
         props.note === undefined || props.note === null ? null : h('p', { className: 'dsh-bc-note' }, props.note),
       )
     }
-
     /** Classify an inspect budget/diagnostic reason and point at the controls. */
     function classifyReason(text) {
       if (typeof text !== 'string' || text.length === 0) return null
@@ -864,157 +900,373 @@ window.__ModuleLoader__.load({
       return { window, reserved, message, headroom, pressure, ratio, threshold, retain, summary, policy, error }
     }
 
-    function BudgetSection(props) {
-      const { draft, budget, disabled } = props
-      const previewAvailable = !props.inspectError && !props.inspectLoading && props.engineApplies !== false && props.sessionId !== ''
-      const preview = previewAvailable ? props.preview : null
-      const projected = props.projection
-      const hasCut = typeof preview?.rangeStart === 'number' && typeof preview?.rangeEnd === 'number'
-      const hasParts = hasCut && [budget?.fixedTokens, preview?.replacedTokens, preview?.retainedTokens, preview?.checkpointFramingTokens, budget?.summaryMaxTokens].every(Number.isFinite)
-      const scale = hasParts ? Math.max(budget.contextWindow ?? 0, budget.currentTokens, preview.afterUpperBoundTokens, 1) : null
-      const field = (name, label, ratio, help) => h(NumberField, { name, label, ratio, value: draft[name], disabled: disabled || name === 'thresholdRatio' && !draft.auto,
-        help, error: props.fieldError(name), onChange: (value) => props.onDraft({ [name]: value }) })
-      return h(Section, { name: 'budget', title: '上下文预算', aside: props.sessionControl },
-        props.engineApplies === false ? h('p', { className: 'dsh-bc-note', 'data-bc': 'budget-not-applicable' }, '此会话使用其他压缩引擎。请选择使用本插件的会话查看预算。')
-          : props.inspectError ? h('p', { className: 'dsh-bc-error', role: 'alert' }, '诊断读取失败：' + props.inspectError)
-          : props.inspectLoading ? h('p', { className: 'dsh-bc-note', role: 'status' }, '读取预算…')
-          : h('div', { className: 'dsh-bc-snapshot', 'data-bc': 'budget-snapshot' },
-            h('div', { className: 'dsh-bc-subhead' }, h('span', { className: 'dsh-bc-caption' }, props.engine?.owner === 'unknown' ? '配置诊断快照' : '运行快照'),
-              budget?.target ? h('span', { className: 'dsh-bc-caption dsh-bc-mono' }, budget.target.provider + '/' + budget.target.model) : null),
-            h('div', { className: 'dsh-bc-metrics' },
-              h(Metric, { label: '模型窗口', value: tokensText(budget?.contextWindow), name: 'context-window' }),
-              h(Metric, { label: '当前上下文', value: tokensText(budget?.currentTokens), name: 'current-tokens', primary: true }),
-              h(Metric, { label: '运行触发点', value: tokensText(budget?.thresholdTokens), name: 'runtime-trigger' })),
-            Number.isFinite(budget?.currentTokens) && budget?.contextWindow > 0 ? h(TokenBar, {
-              name: 'budget-window-bar', scale: Math.max(budget.contextWindow, budget.currentTokens), ticks: true,
-              triggerTokens: budget.thresholdTokens, currentTokens: budget.currentTokens,
-              ariaLabel: '当前上下文 ' + tokensText(budget.currentTokens) + '；运行触发点 ' + tokensText(budget.thresholdTokens) + '；窗口 ' + tokensText(budget.contextWindow),
-              segments: [{ key: 'used', label: '当前上下文', tokens: budget.currentTokens, tone: 'history' }] }) : null,
-            h('div', { className: 'dsh-bc-subhead' },
-              h('div', { className: 'dsh-bc-marker-legend', 'aria-hidden': true }, h('span', null, h('i', { className: 'dsh-bc-key-trigger' }), '运行触发点'), h('span', null, h('i', { className: 'dsh-bc-key-current' }), '当前用量')),
-              h('span', { className: 'dsh-bc-caption' }, budget?.measurement === 'measured' ? '用量基于服务商返回值校准。' : budget?.measurement === 'estimated' ? '用量为估算值。' : '用量尚不可用。'))),
-        h('div', { className: 'dsh-bc-budget-editor', 'data-bc': 'trigger-editor' },
-          h('div', { className: 'dsh-bc-subhead' }, h('h4', { className: 'dsh-bc-h4' }, '触发设置'),
-            h(Toggle, { name: 'auto', label: '自动压缩', checked: draft.auto, disabled, onChange: (auto) => props.onDraft({ auto }) })),
-          h('div', { className: 'dsh-bc-grid dsh-bc-trigger-controls' },
-            h('div', { className: 'dsh-bc-threshold' },
-              field('thresholdRatio', '窗口触发比例', true),
-              h('input', { name: 'thresholdRatioSlider', type: 'range', className: 'dsh-bc-range', min: 0.01, max: 0.99, step: 0.01,
-                'aria-label': '自动压缩触发比例', 'aria-valuetext': draft.thresholdRatio === '' ? '未设置' : ratioText(Number(draft.thresholdRatio)),
-                value: Math.max(0.01, Math.min(0.99, Number(draft.thresholdRatio) || 0.01)), disabled: disabled || !draft.auto,
-                style: { '--bc-range-progress': percentOf(Math.max(0.01, Math.min(0.99, Number(draft.thresholdRatio) || 0.01)) - 0.01, 0.98) + '%' },
-                onChange: (event) => props.onDraft({ thresholdRatio: event.target.value }) }),
-              h('div', { className: 'dsh-bc-range-ticks', 'aria-hidden': true }, h('span', null, '1%'), h('span', null, '50%'), h('span', null, '99%'))),
-            field('headroomTokens', '额外余量', false, '在会话输出预留之外留出的空间')),
-          !draft.auto ? h('p', { className: 'dsh-bc-note' }, '自动压缩已关闭，保留触发配置；仍可手动压缩。') : null,
-          projected ? h('div', { className: 'dsh-bc-draft-allocation', 'data-bc': 'draft-budget' },
-            h('div', { className: 'dsh-bc-subhead' },
-              h(Metric, { label: draft.auto ? '编辑后有效触发点' : '配置触发点', value: tokensText(projected.threshold), name: 'draft-trigger' }),
-              h(Metric, { label: '消息预算', value: tokensText(projected.message), name: 'draft-message-budget' })),
-            projected.error ? h('p', { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'budget-constraint' }, projected.error)
-              : h(TokenBar, { name: 'draft-window-bar', scale: projected.window, triggerTokens: projected.threshold, ticks: true,
-                ariaLabel: '编辑后窗口分配：触发点 ' + tokensText(projected.threshold) + '，额外余量 ' + tokensText(projected.headroom) + '，会话输出预留 ' + tokensText(projected.reserved),
-                segments: [
-                  { key: 'trigger', label: '触发前预算', tokens: projected.threshold, tone: 'history' },
-                  { key: 'slack', label: '比例约束留下的空间', tokens: projected.pressure - projected.threshold, tone: 'free' },
-                  { key: 'headroom', label: '额外余量', tokens: projected.headroom, tone: 'headroom' },
-                  { key: 'output', label: '会话输出预留', tokens: projected.reserved, tone: 'fixed' },
-                ] }),
-            projected.error ? null : h(TokenLegend, { name: 'draft-budget-legend', items: [
-              { key: 'trigger', label: '触发前', tokens: projected.threshold, tone: 'history' },
-              ...(projected.pressure > projected.threshold ? [{ key: 'slack', label: '比例留白', tokens: projected.pressure - projected.threshold, tone: 'free' }] : []),
-              { key: 'headroom', label: '额外余量', tokens: projected.headroom, tone: 'headroom' },
-              { key: 'output', label: '会话输出', tokens: projected.reserved, tone: 'fixed' },
-            ] }),
-            h('p', { className: 'dsh-bc-caption' }, (projected.window * projected.ratio <= projected.pressure ? '由窗口比例限制' : '由输出预留与余量限制') + (projected.policy ? ' · 已合并该模型覆盖规则' : '') + ' · 保存并重载后应用。'))
-            : props.engineApplies === false || props.inspectError || props.inspectLoading || props.draftValid === false ? null
-              : h('p', { className: 'dsh-bc-caption', 'data-bc': 'budget-incomplete' }, props.sessionId === '' ? '选择会话以查看编辑后的预算。' : '诊断预算分项尚不可用，暂无法计算编辑后的预算。')),
-        h('div', { className: 'dsh-bc-retention' },
-          h('h4', { className: 'dsh-bc-h4' }, '近期原文保留'),
-          h('div', { className: 'dsh-bc-grid dsh-bc-retention-controls' },
-            h('fieldset', { className: 'dsh-bc-retain-choice', 'data-bc': 'retention-mode' },
-              h('legend', { className: 'dsh-bc-label' }, '保留方式'),
-              h('div', { className: 'dsh-bc-segmented' }, [['ratio', '按比例'], ['tokens', '固定 tokens']].map(([value, label]) =>
-                h('label', { key: value, className: 'dsh-bc-segment', 'data-checked': draft.retainMode === value },
-                  h('input', { type: 'radio', name: 'retainMode', value, checked: draft.retainMode === value, disabled,
-                    onChange: (event) => props.onRetentionMode(event.target.value) }), h('span', null, label))))),
-            draft.retainMode === 'ratio'
-              ? h(NumberField, { name: 'retainRatio', label: '消息预算保留比例', ratio: true, value: draft.retainRatio, placeholder: '16', disabled,
-                error: props.fieldError('retainRatio'), help: '留空使用 16%；基数为窗口减去会话输出预留', onChange: (retainRatio) => props.onDraft({ retainRatio }) })
-              : field('retainTokens', '原文保留量', false, '自动压缩时保留的近期原文预算')),
-          h('div', { className: 'dsh-bc-retention-result', 'data-bc': 'retention-composition' },
-            h('div', { className: 'dsh-bc-retention-flow', role: 'img', 'aria-label': '较早消息生成摘要，近期原文保留；示意图，非实际消息占比' },
-              h('div', { className: 'dsh-bc-flow-older' }, h('span', { className: 'dsh-bc-caption' }, '较早消息'),
-                h('span', { className: 'dsh-bc-flow-summary' }, '生成摘要', h('span', { 'aria-hidden': true }, ' →'))),
-              h('div', { className: 'dsh-bc-flow-tail' }, h('span', { className: 'dsh-bc-caption' }, '近期消息'), h('span', null, '保留原文'))),
-            h(Metric, { label: '编辑后原文保留预算', name: 'draft-retain', value: tokensText(projected?.retain) })),
-          h('p', { className: 'dsh-bc-caption' }, '流程为示意；实际原文按完整消息与工具边界保留。')),
-        h(Explain, { title: '运行选区与压缩预览', name: 'runtime-preview' },
-          h('p', { className: 'dsh-bc-caption' }, props.engine?.owner === 'unknown' ? '按本插件运行配置计算，尚未确认此会话的引擎归属。' : '以下来自运行配置的自动压缩候选，与未应用的编辑值独立。'),
-          hasCut ? h('p', { className: 'dsh-bc-note dsh-bc-mono', 'data-bc': 'safe-cut' }, '选区 ' + preview.rangeStart + '–' + preview.rangeEnd + ' · 压缩后预算上界 ≤ ' + tokensText(preview.afterUpperBoundTokens))
-            : h('p', { className: 'dsh-bc-note', 'data-bc': 'no-safe-cut' }, previewAvailable ? '当前无安全压缩选区。' : '读取有效会话诊断后查看选区。'),
-          hasParts ? h('div', { className: 'dsh-bc-composition' },
-            h('div', { className: 'dsh-bc-subhead' }, h('span', null, '压缩前'), h('span', { className: 'dsh-bc-mono' }, tokensText(budget.currentTokens))),
-            h(TokenBar, { name: 'before-bar', scale, ariaLabel: '固定前缀、可压缩消息与实际保留原文', segments: [
-              { key: 'fixed', label: '固定前缀', tokens: budget.fixedTokens, tone: 'fixed' },
-              { key: 'history', label: '可压缩消息', tokens: preview.replacedTokens, tone: 'history' },
-              { key: 'tail', label: '实际保留原文', tokens: preview.retainedTokens, tone: 'tail' }] }),
-            h('div', { className: 'dsh-bc-subhead' }, h('span', null, '压缩后上界'), h('span', { className: 'dsh-bc-mono' }, '≤ ' + tokensText(preview.afterUpperBoundTokens))),
-            h(TokenBar, { name: 'after-bar', scale, ariaLabel: '固定前缀、摘要预算与封装、实际保留原文', segments: [
-              { key: 'fixed', label: '固定前缀', tokens: budget.fixedTokens, tone: 'fixed' },
-              { key: 'summary', label: '摘要预算与封装', tokens: budget.summaryMaxTokens + preview.checkpointFramingTokens, tone: 'summary' },
-              { key: 'tail', label: '实际保留原文', tokens: preview.retainedTokens, tone: 'tail' }] }),
-            h(TokenLegend, { items: [
-              { key: 'fixed', label: '固定前缀', tokens: budget.fixedTokens, tone: 'fixed' },
-              { key: 'summary', label: '摘要预算与封装', tokens: budget.summaryMaxTokens + preview.checkpointFramingTokens, tone: 'summary' },
-              { key: 'tail', label: '实际保留原文', tokens: preview.retainedTokens, tone: 'tail' }] })) : null,
-          previewAvailable ? h(ReasonList, { reasons: props.reasons }) : null),
-        h(Explain, { title: '预算与保留规则' },
-          h('p', { className: 'dsh-bc-caption' }, '触发点 = 向下取整 min（完整窗口 × 触发比例，窗口 − 会话输出预留 − 额外余量）。比例约束留下的空间并非额外余量。'),
-          h('p', { className: 'dsh-bc-caption' }, '消息预算 = 窗口 − 会话输出预留；保留比例基于消息预算。有效保留量必须小于有效触发点。'),
-          h('p', { className: 'dsh-bc-caption' }, '自动压缩按保留预算向完整消息、工具调用与结果边界对齐，实际原文可能更多。手动 /compact 与超限恢复使用更激进的选区，保留参数为 0，仍保留安全边界。'),
-          h('p', { className: 'dsh-bc-caption' }, '摘要输出上限限制摘要生成，独立于会话输出预留。压缩后上界含摘要封装；不是实际摘要长度预测。关闭自动压缩同时关闭自动超限恢复，手动压缩仍可用。')))
+    /** Ratio input with a slider and a live token readout. */
+    function RatioControl(props) {
+      const rawId = useId()
+      const id = 'dsh-bc-ratio-' + rawId.replace(/[^a-zA-Z0-9_-]/g, '')
+      const value = props.value === '' ? '' : String(Number((Number(props.value) * 100).toFixed(8)))
+      const ratio = Math.max(0.01, Math.min(0.99, Number(props.value) || 0.01))
+      return h(
+        'div',
+        { className: 'dsh-bc-ratio' },
+        h(
+          'div',
+          { className: 'dsh-bc-ratioHead' },
+          h('label', { className: 'dsh-bc-label', htmlFor: id }, props.label),
+          h(
+            'div',
+            { className: 'dsh-bc-number dsh-bc-number-inline' },
+            h('input', {
+              id,
+              name: props.name,
+              className: 'dsh-bc-input dsh-bc-mono',
+              type: 'number',
+              inputMode: 'decimal',
+              min: 1,
+              max: 99,
+              step: 'any',
+              value,
+              disabled: props.disabled,
+              'aria-label': props.label,
+              'aria-invalid': props.error ? true : undefined,
+              onChange: (event) => props.onChange(event.target.value === '' ? '' : String(Number(event.target.value) / 100)),
+            }),
+            h('span', { className: 'dsh-bc-unit', 'aria-hidden': true }, '%'),
+          ),
+        ),
+        h('input', {
+          name: props.sliderName,
+          type: 'range',
+          className: 'dsh-bc-range',
+          min: 0.01,
+          max: 0.99,
+          step: 0.01,
+          'aria-label': props.label,
+          'aria-valuetext': value === '' ? '未设置' : value + '%',
+          value: ratio,
+          disabled: props.disabled,
+          style: { '--bc-range-progress': percentOf(ratio - 0.01, 0.98) + '%' },
+          onChange: (event) => props.onChange(event.target.value),
+        }),
+        h('div', { className: 'dsh-bc-scale', 'aria-hidden': true }, h('span', null, '1%'), h('span', null, '50%'), h('span', null, '99%')),
+        props.error ? h('p', { className: 'dsh-bc-error', role: 'alert' }, props.error) : null,
+      )
     }
 
+    /** Trigger policy and headroom: one visual control, one exact value. */
+    function BudgetSection(props) {
+      const { draft, disabled } = props
+      const ratio = Number(draft.thresholdRatio)
+      const trigger = props.projection && !props.projection.error ? tokensText(props.projection.threshold) : null
+      return h(
+        'section',
+        { className: 'dsh-bc-card', 'data-bc-section': 'budget', 'data-bc': 'trigger-editor' },
+        h(
+          'div',
+          { className: 'dsh-bc-cardHead' },
+          h('div', { className: 'dsh-bc-titleRow' },
+            h('h3', { className: 'dsh-bc-h3' }, '触发与余量'),
+            h(Help, { label: '预算规则' },
+              h('p', null, '触发点 = 向下取整 min(窗口 × 比例, 窗口 − 输出预留 − 额外余量)。'),
+              h('p', null, '消息预算 = 窗口 − 输出预留；保留比例以消息预算为基数。'))),
+          h(Toggle, { name: 'auto', label: '自动压缩', checked: draft.auto, disabled, onChange: (auto) => props.onDraft({ auto }) }),
+        ),
+        h(RatioControl, {
+          name: 'thresholdRatio',
+          sliderName: 'thresholdRatioSlider',
+          label: '触发比例',
+          value: draft.thresholdRatio,
+          disabled: disabled || !draft.auto,
+          error: props.fieldError('thresholdRatio'),
+          onChange: (thresholdRatio) => props.onDraft({ thresholdRatio }),
+        }),
+        h('div', { className: 'dsh-bc-fieldRow' },
+          h(NumberField, {
+            name: 'headroomTokens',
+            label: '额外余量',
+            value: draft.headroomTokens,
+            disabled,
+            error: props.fieldError('headroomTokens'),
+            onChange: (headroomTokens) => props.onDraft({ headroomTokens }),
+          })),
+        h('p', { className: 'dsh-bc-caption dsh-bc-mono', 'data-bc': 'trigger-readout' },
+          trigger === null ? '触发点待诊断' : '触发点 ' + trigger + ' · 窗口比例 ' + ratioText(ratio)),
+        !draft.auto ? h('p', { className: 'dsh-bc-statusLine' }, '自动压缩已关闭；手动压缩仍可用。') : null,
+      )
+    }
 
-    // ── model / effort section ────────────────────────────────────────────
+    /** Recent-tail retention form, with the ratio/token switch as segments. */
+    function RetentionSection(props) {
+      const { draft, disabled } = props
+      return h(
+        'section',
+        { className: 'dsh-bc-card' },
+        h(
+          'div',
+          { className: 'dsh-bc-cardHead' },
+          h('h3', { className: 'dsh-bc-h3' }, '近期原文保留'),
+          h(Help, { label: '保留规则' },
+            h('p', null, '按完整消息、工具调用与结果边界对齐；实际保留可能多于预算。'),
+            h('p', null, '留空使用 16%；有效保留量必须小于触发点。'))),
+        h('fieldset', { className: 'dsh-bc-retainChoice', 'data-bc': 'retention-mode' },
+          h('legend', { className: 'dsh-bc-srOnly' }, '保留方式'),
+          h('div', { className: 'dsh-bc-segmented' }, [['ratio', '按比例'], ['tokens', '固定 tokens']].map(([value, label]) =>
+            h('label', { key: value, className: 'dsh-bc-segment', 'data-checked': draft.retainMode === value },
+              h('input', {
+                type: 'radio', name: 'retainMode', value,
+                checked: draft.retainMode === value, disabled,
+                onChange: (event) => props.onRetentionMode(event.target.value),
+              }),
+              h('span', null, label))))),
+        h('div', { className: 'dsh-bc-fieldRow' },
+          draft.retainMode === 'ratio'
+            ? h(NumberField, {
+              name: 'retainRatio',
+              label: '保留比例',
+              ratio: true,
+              value: draft.retainRatio,
+              placeholder: '16',
+              disabled,
+              error: props.fieldError('retainRatio'),
+              onChange: (retainRatio) => props.onDraft({ retainRatio }),
+            })
+            : h(NumberField, {
+              name: 'retainTokens',
+              label: '保留量',
+              value: draft.retainTokens,
+              disabled,
+              error: props.fieldError('retainTokens'),
+              onChange: (retainTokens) => props.onDraft({ retainTokens }),
+            })),
+        h('p', { className: 'dsh-bc-caption' }, draft.retainMode === 'ratio' ? '基数为窗口减去会话输出预留。' : '固定值按完整消息边界对齐。'),
+      )
+    }
 
+    const MEASUREMENT_LABEL = Object.freeze({ measured: '实测', estimated: '估算' })
+
+    /** Right-side live window and draft allocation. */
+    function RuntimeRail(props) {
+      const { budget, projection, engine, engineApplies, inspectError, inspectLoading, sessionId } = props
+      const unavailable = engineApplies === false
+        ? '此会话使用其他压缩引擎。'
+        : inspectError !== null && inspectError !== undefined
+          ? '诊断读取失败：' + inspectError
+          : inspectLoading
+            ? '读取诊断…'
+            : sessionId === ''
+              ? '选择会话以读取窗口。'
+              : null
+      return h(
+        'aside',
+        { className: 'dsh-bc-rail', 'aria-label': '实时窗口' },
+        h(
+          'section',
+          { className: 'dsh-bc-panel', 'data-bc': 'budget-snapshot' },
+          h('div', { className: 'dsh-bc-panelHead' },
+            h('h3', { className: 'dsh-bc-h4' }, '上下文窗口'),
+            budget !== null && budget !== undefined && MEASUREMENT_LABEL[budget.measurement]
+              ? h('span', { className: 'dsh-bc-chip' }, MEASUREMENT_LABEL[budget.measurement])
+              : null),
+          unavailable !== null
+            ? h('p', { className: unavailable.startsWith('诊断读取失败') ? 'dsh-bc-error' : 'dsh-bc-note', role: unavailable.startsWith('诊断读取失败') ? 'alert' : 'status', 'data-bc': engineApplies === false ? 'budget-not-applicable' : undefined }, unavailable)
+            : h(React.Fragment, null,
+              h('div', { className: 'dsh-bc-metrics dsh-bc-metrics-rail' },
+                h(Metric, { label: '模型窗口', value: tokensText(budget?.contextWindow), name: 'context-window' }),
+                h(Metric, { label: '当前上下文', value: tokensText(budget?.currentTokens), name: 'current-tokens', primary: true }),
+                h(Metric, { label: '运行触发点', value: tokensText(budget?.thresholdTokens), name: 'runtime-trigger' })),
+              Number.isFinite(budget?.currentTokens) && budget?.contextWindow > 0
+                ? h(TokenBar, {
+                  name: 'budget-window-bar',
+                  scale: Math.max(budget.contextWindow, budget.currentTokens),
+                  triggerTokens: budget.thresholdTokens,
+                  currentTokens: budget.currentTokens,
+                  ariaLabel: '当前上下文 ' + tokensText(budget.currentTokens) + '；运行触发点 ' + tokensText(budget.thresholdTokens) + '；窗口 ' + tokensText(budget.contextWindow),
+                  segments: [{ key: 'used', label: '当前上下文', tokens: budget.currentTokens, tone: 'history' }],
+                })
+                : null,
+              h('div', { className: 'dsh-bc-markerLegend', 'aria-hidden': true },
+                h('span', null, h('i', { className: 'dsh-bc-key-trigger' }), '触发点'),
+                h('span', null, h('i', { className: 'dsh-bc-key-current' }), '当前')),
+              budget?.measurement === 'measured' ? h('p', { className: 'dsh-bc-caption' }, '用量基于服务商返回值校准') : null,
+              h('p', { className: 'dsh-bc-caption' }, budget?.target ? budget.target.provider + '/' + budget.target.model : ''))),
+        projection
+          ? h(
+            'section',
+            { className: 'dsh-bc-panel', 'data-bc': 'draft-budget' },
+            h('div', { className: 'dsh-bc-panelHead' },
+              h('h3', { className: 'dsh-bc-h4' }, '编辑后预算'),
+              projection.policy ? h('span', { className: 'dsh-bc-chip' }, '模型规则') : null),
+            h('div', { className: 'dsh-bc-metrics dsh-bc-metrics-rail' },
+              h(Metric, { label: '触发', value: tokensText(projection.threshold), name: 'draft-trigger' }),
+              h(Metric, { label: '消息预算', value: tokensText(projection.message), name: 'draft-message-budget' }),
+              h(Metric, { label: '保留', value: tokensText(projection.retain), name: 'draft-retain' })),
+            projection.error
+              ? h('p', { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'budget-constraint' }, projection.error)
+              : h(React.Fragment, null,
+                h(TokenBar, {
+                  name: 'draft-window-bar',
+                  scale: projection.window,
+                  triggerTokens: projection.threshold,
+                  ariaLabel: '编辑后窗口分配：触发点 ' + tokensText(projection.threshold) + '，额外余量 ' + tokensText(projection.headroom) + '，会话输出预留 ' + tokensText(projection.reserved),
+                  segments: [
+                    { key: 'trigger', label: '触发前预算', tokens: projection.threshold, tone: 'history' },
+                    { key: 'slack', label: '比例约束留下的空间', tokens: projection.pressure - projection.threshold, tone: 'free' },
+                    { key: 'headroom', label: '额外余量', tokens: projection.headroom, tone: 'headroom' },
+                    { key: 'output', label: '会话输出预留', tokens: projection.reserved, tone: 'fixed' },
+                  ],
+                }),
+                h(TokenLegend, {
+                  items: [
+                    { key: 'trigger', label: '触发前', tokens: projection.threshold, tone: 'history' },
+                    ...(projection.pressure > projection.threshold ? [{ key: 'slack', label: '留白', tokens: projection.pressure - projection.threshold, tone: 'free' }] : []),
+                    { key: 'headroom', label: '余量', tokens: projection.headroom, tone: 'headroom' },
+                    { key: 'output', label: '输出预留', tokens: projection.reserved, tone: 'fixed' },
+                  ],
+                })),
+            h('p', { className: 'dsh-bc-caption' }, (projection.window * projection.ratio <= projection.pressure ? '由窗口比例限制' : '由输出预留与余量限制') + (projection.policy ? ' · 已合并模型规则' : '')))
+          : unavailable === null && sessionId !== ''
+            ? h('section', { className: 'dsh-bc-panel', 'data-bc': 'budget-incomplete-panel' },
+              h('div', { className: 'dsh-bc-panelHead' }, h('h3', { className: 'dsh-bc-h4' }, '编辑后')),
+              h('div', { className: 'dsh-bc-metrics dsh-bc-metrics-rail' },
+                h(Metric, { label: '保留', value: tokensText(undefined), name: 'draft-retain' })),
+              h('p', { className: 'dsh-bc-caption', 'data-bc': 'budget-incomplete' }, '预算分项不可用，暂无法计算编辑后的预算。'))
+            : null,
+      )
+    }
+
+    /** Before/after token composition from the live inspected preview. */
+    function CompressionPreview(props) {
+      const { budget, preview, engineApplies, inspectError, inspectLoading, sessionId, reasons } = props
+      const available = !inspectError && !inspectLoading && engineApplies !== false && sessionId !== ''
+      const current = available ? preview : null
+      const hasCut = typeof current?.rangeStart === 'number' && typeof current?.rangeEnd === 'number'
+      const hasParts = hasCut && [budget?.fixedTokens, current?.replacedTokens, current?.retainedTokens, current?.checkpointFramingTokens, budget?.summaryMaxTokens].every(Number.isFinite)
+      const scale = hasParts ? Math.max(budget.contextWindow ?? 0, budget.currentTokens, current.afterUpperBoundTokens, 1) : null
+      return h(
+        'section',
+        { className: 'dsh-bc-card dsh-bc-preview', 'data-bc': 'runtime-preview' },
+        h(
+          'div',
+          { className: 'dsh-bc-cardHead' },
+          h('div', { className: 'dsh-bc-previewTitle' },
+            h('h3', { className: 'dsh-bc-h3' }, '压缩预览'),
+            hasCut ? h('span', { className: 'dsh-bc-chip dsh-bc-mono' }, '选区 ' + current.rangeStart + '–' + current.rangeEnd) : null),
+          h(Help, { label: '预览说明' },
+            h('p', null, '来自运行配置的自动压缩候选，与未保存的编辑值独立。'),
+            h('p', null, '压缩后上界含摘要封装，不是实际摘要长度预测。'),
+            h('p', null, '手动 /compact 与超限恢复使用更激进的选区，实际原文可能更多。'))),
+        hasCut ? h('p', { className: 'dsh-bc-caption dsh-bc-mono', 'data-bc': 'safe-cut' }, '选区 ' + current.rangeStart + '–' + current.rangeEnd + ' · 压缩后上界 ≤ ' + tokensText(current.afterUpperBoundTokens))
+          : h('p', { className: 'dsh-bc-caption', 'data-bc': 'no-safe-cut' }, available ? '当前没有安全压缩选区。' : '读取有效会话诊断后查看选区。'),
+        hasParts
+          ? h('div', { className: 'dsh-bc-previewBody' },
+            h('div', { className: 'dsh-bc-previewRow' },
+              h('div', { className: 'dsh-bc-previewLabel' },
+                h('span', null, '压缩前'),
+                h('span', { className: 'dsh-bc-mono' }, tokensText(budget.currentTokens))),
+              h(TokenBar, {
+                name: 'before-bar',
+                scale,
+                ariaLabel: '固定前缀、可压缩消息与实际保留原文',
+                segments: [
+                  { key: 'fixed', label: '固定前缀', tokens: budget.fixedTokens, tone: 'fixed' },
+                  { key: 'history', label: '可压缩消息', tokens: current.replacedTokens, tone: 'history' },
+                  { key: 'tail', label: '实际保留原文', tokens: current.retainedTokens, tone: 'tail' },
+                ],
+              })),
+            h('div', { className: 'dsh-bc-previewArrow', 'aria-hidden': true },
+              h('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round' },
+                h('path', { d: 'M12 4v14m-5-5 5 5 5-5' }))),
+            h('div', { className: 'dsh-bc-previewRow' },
+              h('div', { className: 'dsh-bc-previewLabel' },
+                h('span', null, '压缩后上界'),
+                h('span', { className: 'dsh-bc-mono' }, '≤ ' + tokensText(current.afterUpperBoundTokens))),
+              h(TokenBar, {
+                name: 'after-bar',
+                scale,
+                ariaLabel: '固定前缀、摘要预算与封装、实际保留原文',
+                segments: [
+                  { key: 'fixed', label: '固定前缀', tokens: budget.fixedTokens, tone: 'fixed' },
+                  { key: 'summary', label: '摘要预算与封装', tokens: budget.summaryMaxTokens + current.checkpointFramingTokens, tone: 'summary' },
+                  { key: 'tail', label: '实际保留原文', tokens: current.retainedTokens, tone: 'tail' },
+                ],
+              })),
+            h(TokenLegend, {
+              items: [
+                { key: 'fixed', label: '固定前缀', tokens: budget.fixedTokens, tone: 'fixed' },
+                { key: 'history', label: '可压缩消息', tokens: current.replacedTokens, tone: 'history' },
+                { key: 'summary', label: '摘要与封装', tokens: budget.summaryMaxTokens + current.checkpointFramingTokens, tone: 'summary' },
+                { key: 'tail', label: '实际保留', tokens: current.retainedTokens, tone: 'tail' },
+              ],
+            }),
+            null)
+          : null,
+        available ? h(ReasonList, { reasons }) : null,
+      )
+    }
+
+    /** Model route, effort, output cap and cache preference. */
     function ModelSection(props) {
       const { draft, routes, route, disabled } = props
       const native = draft.mode === 'native'
       const custom = !route && (draft.provider !== '' || draft.model !== '')
-      const textField = (name, label, value, onChange) => h(Field, { name, label, error: props.fieldError(name), children: (id, aria) =>
-        h('input', { ...aria, id, name, className: 'dsh-bc-input', value, disabled, onChange: (event) => onChange(event.target.value) }) })
-      return h(Section, { name: 'model', title: '摘要生成' },
+      const textField = (name, label, value, onChange) => h(Field, {
+        name, label, error: props.fieldError(name),
+        children: (id, aria) => h('input', { ...aria, id, name, className: 'dsh-bc-input', value, disabled, onChange: (event) => onChange(event.target.value) }),
+      })
+      return h(
+        'section',
+        { className: 'dsh-bc-card', 'data-bc-section': 'model' },
+        h('div', { className: 'dsh-bc-cardHead' },
+          h('h3', { className: 'dsh-bc-h3' }, '摘要生成'),
+          h(Help, { label: '摘要规则' },
+            h('p', null, '摘要模型只负责压缩，不改变主会话模型。'),
+            h('p', null, '摘要输出上限与输入共用该模型窗口；过高无法容纳历史，过低可能截断。'))),
         h('div', { className: 'dsh-bc-grid' },
           h(Field, { name: 'summaryRoute', label: '摘要模型', error: props.fieldError('summarizationModel'), children: (id, aria) =>
-            h('select', { ...aria, id, name: 'summaryRoute', className: 'dsh-bc-input',
-              value: custom ? 'custom' : draft.provider === '' ? '' : JSON.stringify([draft.provider, draft.model]), disabled,
-              onChange: (event) => { if (event.target.value === 'custom') return; const [provider, model] = event.target.value === '' ? ['', ''] : JSON.parse(event.target.value); props.onDraft({ provider, model }) } },
-              h('option', { value: '' }, '跟随会话模型'), routes.map((entry) => h('option', { key: JSON.stringify([entry.provider, entry.model]), value: JSON.stringify([entry.provider, entry.model]) }, entry.provider + '/' + entry.model)),
-              custom ? h('option', { value: 'custom' }, draft.provider + '/' + draft.model) : null) }),
+            h(Select, {
+              id, name: 'summaryRoute', value: custom ? 'custom' : draft.provider === '' ? '' : JSON.stringify([draft.provider, draft.model]), disabled,
+              ariaInvalid: props.fieldError('summarizationModel') ? true : undefined,
+              onChange: (event) => {
+                if (event.target.value === 'custom') return
+                const [provider, model] = event.target.value === '' ? ['', ''] : JSON.parse(event.target.value)
+                props.onDraft({ provider, model })
+              },
+            },
+            h('option', { value: '' }, '跟随会话模型'),
+            routes.map((entry) => h('option', { key: JSON.stringify([entry.provider, entry.model]), value: JSON.stringify([entry.provider, entry.model]) }, entry.provider + '/' + entry.model)),
+            custom ? h('option', { value: 'custom' }, draft.provider + '/' + draft.model) : null) }),
           h(Field, { name: 'reasoningEffort', label: '思考强度', error: props.fieldError('reasoningEffort'), children: (id, aria) =>
-            route ? h('select', { ...aria, id, name: 'reasoningEffort', className: 'dsh-bc-input', value: draft.effort, disabled: disabled || native,
-              onChange: (event) => props.onDraft({ effort: event.target.value }) },
-              h('option', { value: '' }, native ? NATIVE_NOT_APPLICABLE : '模型默认'), route.efforts.map((effort) => h('option', { key: effort, value: effort }, effort)),
-              draft.effort !== '' && !route.efforts.includes(draft.effort) ? h('option', { value: draft.effort }, draft.effort + ' · 未声明支持') : null)
-              : h('input', { ...aria, id, name: 'reasoningEffort', className: 'dsh-bc-input', value: draft.effort, disabled: disabled || native,
-                placeholder: native ? NATIVE_NOT_APPLICABLE : '模型默认；能力未知', onChange: (event) => props.onDraft({ effort: event.target.value }) }) }),
-          h(NumberField, { name: 'maxTokens', label: '摘要输出上限', value: draft.maxTokens, min: 1, disabled, placeholder: draft.headroomTokens,
-            help: '留空跟随额外余量', error: props.fieldError('maxTokens'), onChange: (maxTokens) => props.onDraft({ maxTokens }) }),
-          h(Toggle, { name: 'cachePriority', label: CACHE_PRIORITY_COPY, checked: draft.cachePriority, disabled: disabled || native,
-            onChange: (cachePriority) => props.onDraft({ cachePriority }), note: native ? '思考强度与缓存优先由原生引擎决定。' : null })),
-        h(Explain, { title: '自定义摘要模型', open: custom || undefined },
+            route ? h(Select, {
+              id, name: 'reasoningEffort', value: draft.effort, disabled: disabled || native,
+              ariaInvalid: props.fieldError('reasoningEffort') ? true : undefined,
+              onChange: (event) => props.onDraft({ effort: event.target.value }),
+            },
+            h('option', { value: '' }, native ? NATIVE_NOT_APPLICABLE : '模型默认'),
+            route.efforts.map((effort) => h('option', { key: effort, value: effort }, effort)),
+            draft.effort !== '' && !route.efforts.includes(draft.effort) ? h('option', { value: draft.effort }, draft.effort + ' · 未声明支持') : null)
+              : h('input', {
+                ...aria, id, name: 'reasoningEffort', className: 'dsh-bc-input', value: draft.effort, disabled: disabled || native,
+                placeholder: native ? NATIVE_NOT_APPLICABLE : '模型默认；能力未知',
+                onChange: (event) => props.onDraft({ effort: event.target.value }),
+              }) }),
+          h(NumberField, {
+            name: 'maxTokens', label: '摘要输出上限', value: draft.maxTokens, min: 1, disabled, placeholder: draft.headroomTokens,
+            error: props.fieldError('maxTokens'), onChange: (maxTokens) => props.onDraft({ maxTokens }),
+          }),
+          h(Toggle, {
+            name: 'cachePriority', label: CACHE_PRIORITY_COPY, checked: draft.cachePriority, disabled: disabled || native, block: true,
+            onChange: (cachePriority) => props.onDraft({ cachePriority }),
+          })),
+        h('details', { className: 'dsh-bc-customRoute', open: custom || undefined },
+          h('summary', null, '自定义摘要路由'),
           h('div', { className: 'dsh-bc-grid' },
             textField('summarizationProvider', '服务商', draft.provider, props.onProvider),
             textField('summarizationModel', '模型', draft.model, props.onModel))),
+        native ? h('p', { className: 'dsh-bc-caption' }, '原生模式由宿主决定思考强度与缓存优先。') : null,
         props.routeWarning ? h('p', { className: 'dsh-bc-note', 'data-bc': 'route-warning' }, props.routeWarning) : null,
         props.modelsStatus === 'loading' || props.modelsStatus === 'refreshing' ? h('p', { className: 'dsh-bc-caption', role: 'status' }, '读取模型列表…')
           : props.modelsStatus === 'error' ? h('p', { className: 'dsh-bc-note' }, '模型列表读取失败，可使用自定义模型。') : null,
-        h(Explain, { title: '摘要生成规则' },
-          h('p', { className: 'dsh-bc-caption' }, '摘要模型只负责压缩，不改变主会话模型。服务商与模型留空时跟随会话；思考强度留空时使用摘要模型自身默认值。'),
-          h('p', { className: 'dsh-bc-caption' }, '摘要输出上限与摘要输入共用该模型的窗口。设置过高可能无法容纳待压缩的历史；设置过低可能导致摘要截断。'),
-          h('p', { className: 'dsh-bc-caption' }, '缓存优先会保留提示、工具与历史前缀，将动态指令放在末尾。切换模型或替换旧消息可能影响复用，命中量以服务商返回值为准。')))
+      )
     }
 
     // ── advanced section ──────────────────────────────────────────────────
@@ -1080,16 +1332,12 @@ window.__ModuleLoader__.load({
       'persistence-error': '持久化失败',
     })
 
-    /** One-line engine ownership statement. */
+    /** Only state what the engine ownership means for this page. */
     function engineNote(engine) {
-      if (engine === null || engine === undefined) return '引擎归属未知（unknown；未选择会话）。'
-      if (engine.inspectApplies === false) {
-        return `此会话使用其他压缩引擎（归属：${engine.owner}）。本页模式与预算不适用，不绘制虚构预算 / 预览；下方仍展示会话真实原生事件。`
-      }
-      if (engine.owner === 'unknown') {
-        return `无法确认此会话引擎归属（${engine.owner}）。预算 / 预览基于本插件运行配置，仅作配置诊断，不代表已观测的引擎状态。`
-      }
-      return `压缩引擎：${engine.owner}。预算 / 预览基于本插件配置；诊断只读。`
+      if (engine === null || engine === undefined) return '未选择会话。'
+      if (engine.inspectApplies === false) return '此会话由其他压缩引擎接管（' + engine.owner + '）；预算与预览不适用。'
+      if (engine.owner === 'unknown') return '引擎归属未确认；预算与预览仅作配置诊断。'
+      return '压缩引擎：' + engine.owner + '。'
     }
 
     /** The status of the last real native compaction bracket. */
@@ -1107,7 +1355,7 @@ window.__ModuleLoader__.load({
           h(Row, { label: '缓存写入', value: tokensText(record.cacheWriteTokens) })),
         record.status === 'persistence-error' ? h('p', { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'persistence-error' }, '摘要可能已写入，但会话保存失败。') : null,
         record.error ? h('p', { className: 'dsh-bc-error', role: 'alert' }, record.error) : null,
-        h('p', { className: 'dsh-bc-caption' }, '消息用量仅对应本次替换区；缓存用量来自摘要请求。未报告的数值显示为未知。'))
+        h('p', { className: 'dsh-bc-caption' }, '未报告的数值显示为未知。'))
     }
 
     function StatusSection(props) {
@@ -1128,27 +1376,41 @@ window.__ModuleLoader__.load({
     function SessionPicker(props) {
       const id = 'dsh-bc-session-' + useId().replace(/[^a-zA-Z0-9_-]/g, '')
       return h('div', { className: 'dsh-bc-session', 'data-bc': 'session-picker' },
-        h('label', { htmlFor: id, className: 'dsh-bc-sr-only' }, '诊断会话'),
-        h('select', { id, name: 'inspectSession', className: 'dsh-bc-input', value: props.selectedId,
-          onChange: (event) => props.onSelect(event.target.value), title: '选择用于预算与诊断的会话' },
-          h('option', { value: '' }, props.phase === 'pending' ? '加载会话…' : '选择会话'),
-          props.entries.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.title + (entry.running ? ' · 运行中' : '')))),
-        h('button', { type: 'button', className: 'dsh-bc-btn', onClick: props.onRefresh, disabled: props.refresh, 'aria-label': '刷新会话诊断' }, props.refresh ? '读取中…' : '刷新'),
+        h('label', { htmlFor: id, className: 'dsh-bc-srOnly' }, '诊断会话'),
+        h(Select, {
+          id,
+          name: 'inspectSession',
+          value: props.selectedId,
+          ariaLabel: '诊断会话',
+          onChange: (event) => props.onSelect(event.target.value),
+        },
+        h('option', { value: '' }, props.phase === 'pending' ? '加载会话…' : '选择会话'),
+        props.entries.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.title + (entry.running ? ' · 运行中' : '')))),
+        h('button', {
+          type: 'button', className: 'dsh-bc-iconBtn', onClick: props.onRefresh, disabled: props.refresh,
+          'aria-label': '刷新会话诊断', title: '刷新会话诊断',
+        },
+        h('svg', { width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
+          h('path', { d: 'M20 11a8 8 0 1 0-2.4 6M20 4v7h-7' }))),
         props.listError ? h('span', { className: 'dsh-bc-error' }, '会话列表读取失败') : null)
     }
-
-    function ActiveConfigBanner(props) {
+    function ActiveConfigPill(props) {
       const active = props.activeConfig
-      const status = props.requiresReload === true ? '已保存，待重载' : !active ? '运行状态未知' : '运行中 · ' + (MODE_META[active.mode]?.label ?? active.mode)
-      return h('div', { className: 'dsh-bc-banner', 'data-bc': 'active-config', 'data-requires-reload': String(props.requiresReload) },
-        h('span', { className: 'dsh-bc-banner-title' }, status),
-        h(Explain, { title: '生效方式' },
-          h('p', { className: 'dsh-bc-caption' }, '保存后需重启 DSH 或重载配置档。刷新网页不会更新运行引擎。'),
-          active ? h('div', { className: 'dsh-bc-status-grid' },
-            h(Row, { label: '运行策略', value: MODE_META[active.mode]?.label ?? active.mode }),
-            h(Row, { label: '运行摘要模型', value: active.summarizationProvider ? active.summarizationProvider + '/' + active.summarizationModel : '跟随会话' }),
-            h(Row, { label: '运行触发比例', value: ratioText(active.thresholdRatio) }),
-            h(Row, { label: '运行保留预算', value: active.retainTokens != null ? tokensText(active.retainTokens) : ratioText(active.retainRatio) })) : null))
+      const pending = props.requiresReload === true
+      const mode = active ? (MODE_META[active.mode]?.label ?? active.mode) : null
+      const label = pending ? '已保存，待重载' : active ? '运行中' : '运行状态未知'
+      const retain = active ? (active.retainTokens != null ? tokensText(active.retainTokens) : ratioText(active.retainRatio)) : null
+      return h('span', {
+        className: 'dsh-bc-pill',
+        'data-bc': 'active-config',
+        'data-tone': pending ? 'warn' : active ? 'live' : 'muted',
+        'data-requires-reload': String(pending),
+        title: pending ? '保存后需重启 DSH 或重载配置档' : undefined,
+      },
+        h('i', { className: 'dsh-bc-pillDot', 'aria-hidden': true }),
+        h('span', null, label),
+        mode !== null && !pending ? h('span', { className: 'dsh-bc-pillMode' }, mode) : null,
+        retain !== null ? h('span', { className: 'dsh-bc-pillMeta dsh-bc-mono' }, '保留 ' + retain + ' · 触发 ' + ratioText(active.thresholdRatio)) : null)
     }
 
     function SaveFooter(props) {
@@ -1161,11 +1423,11 @@ window.__ModuleLoader__.load({
         h('div', { className: 'dsh-bc-footer-copy' },
           failure ? h('p', { className: 'dsh-bc-error', role: 'alert', 'data-bc': props.conflict ? 'revision-conflict' : props.saveState.kind === 'rejected' ? 'save-rejected' : 'save-transport' }, failure)
             : h('p', { className: 'dsh-bc-note', role: 'status', 'data-bc': !props.writable ? 'read-only' : props.saveState.kind === 'saved' ? 'save-saved' : 'save-status' },
-              !props.writable ? '只读配置' : props.saveState.kind === 'saved' ? '已保存，重载后生效。' : props.dirty ? '有未保存的更改' : '所有更改已保存'),
+              !props.writable ? '只读' : props.saveState.kind === 'saved' ? '已保存，重载后生效；刷新网页不会更新运行引擎' : props.dirty ? '未保存' : ''),
           props.errors.length ? h(Explain, { title: '需修正 ' + props.errors.length + ' 项', open: true },
             h('ul', { className: 'dsh-bc-reasons' }, props.errors.map((message, index) => h('li', { key: index }, message)))) : null),
         h('div', { className: 'dsh-bc-actions' },
-          h('button', { type: 'button', className: 'dsh-bc-btn', onClick: props.onReload, disabled: saving || (!props.dirty && !props.conflict) }, props.conflict ? '重新读取' : '放弃修改'),
+          h('button', { type: 'button', className: 'dsh-bc-btn', onClick: props.onReload, disabled: saving || (!props.dirty && !props.conflict) }, props.conflict ? '重新读取' : '放弃更改'),
           h('button', { type: 'button', className: 'dsh-bc-btn dsh-bc-btn-primary', onClick: props.onSave, disabled, 'data-bc': 'save-button' }, saving ? '保存中…' : '保存设置')))
     }
 
@@ -1351,11 +1613,26 @@ window.__ModuleLoader__.load({
       const refresh = () => setRefreshToken((token) => token + 1)
 
       const pageStyle = h('style', { key: 'dsh-bc-style' }, STYLE)
+      const sessionControl = h(SessionPicker, {
+        entries,
+        selectedId,
+        onSelect: setPickedId,
+        listAvailable: props.sessions !== null && props.sessions !== undefined,
+        phase: sessionList !== null && sessionList !== undefined ? sessionList.phase : 'ready',
+        listError: sessionList !== null && sessionList !== undefined ? sessionList.error : null,
+        refresh: inspectLoading,
+        onRefresh: refresh,
+      })
       const title = h(
-        'div',
-        { className: 'dsh-bc-page-head', key: 'head' },
-        h('h2', { className: 'dsh-bc-title' }, '上下文压缩'),
+        'header',
+        { className: 'dsh-bc-head', key: 'head' },
+        h('div', { className: 'dsh-bc-headMain' },
+          h('h2', { className: 'dsh-bc-title' }, '上下文压缩'),
+          h(ActiveConfigPill, { activeConfig, requiresReload, dirty })),
+        h('div', { className: 'dsh-bc-headTools' }, sessionControl),
+        requiresReload === true ? h('p', { className: 'dsh-bc-runtimeHint' }, '保存后需重启 DSH 或重载配置档。') : null,
       )
+
 
       if (formStatus === 'missing' || formStatus === 'loading') {
         return h(
@@ -1377,7 +1654,6 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'dsh-bc-section' },
             h('p', { className: 'dsh-bc-note', 'data-bc': 'form-unavailable' }, '宿主未提供可编辑表单，不填造默认值。'),
-            h(ActiveConfigBanner, { activeConfig, requiresReload, dirty }),
           ),
           h(StatusSection, {
             sessionId: selectedId,
@@ -1407,55 +1683,60 @@ window.__ModuleLoader__.load({
         { className: 'dsh-bc-page', 'data-better-compact': 'page' },
         pageStyle,
         title,
-        h(ActiveConfigBanner, { activeConfig, requiresReload, dirty }),
         h(ModeCards, {
           value: draft === null ? '' : draft.mode,
           disabled,
           onChange: (mode) => updateDraft({ mode }),
         }),
-        h(BudgetSection, {
-          projection,
-          draftValid: draftErrors.length === 0,
-          engine,
-          draft: draft ?? draftFromValue({}),
-          activeConfig,
+        h('div', { className: 'dsh-bc-workbench' },
+          h('div', { className: 'dsh-bc-main' },
+            h(BudgetSection, {
+              projection,
+              draft: draft ?? draftFromValue({}),
+              disabled,
+              fieldError,
+              onDraft: updateDraft,
+            }),
+            h(RetentionSection, {
+              draft: draft ?? draftFromValue({}),
+              disabled,
+              fieldError,
+              onDraft: updateDraft,
+              onRetentionMode: (retainMode) => updateDraft({ retainMode }),
+            }),
+            h(ModelSection, {
+              draft: draft ?? draftFromValue({}),
+              routes,
+              modelsStatus: modelsInspect.status,
+              modelsEnabled,
+              modelsError,
+              route: draftRoute,
+              routeWarning,
+              disabled,
+              fieldError,
+              onDraft: updateDraft,
+              onProvider: (value) => updateDraft(value === '' ? { provider: '', model: '' } : { provider: value }),
+              onModel: (value) => updateDraft(value === '' ? { provider: '', model: '' } : { model: value }),
+            }),
+            h(AdvancedSection, { draft: draft ?? draftFromValue({}), disabled, fieldError, onDraft: updateDraft })),
+          h(RuntimeRail, {
+            budget,
+            projection,
+            engine,
+            engineApplies,
+            inspectError,
+            inspectLoading,
+            sessionId: selectedId,
+          })),
+        h(CompressionPreview, {
           budget,
           preview,
-          reasons: budgetReasons,
           engineApplies,
-          sessionId: selectedId,
-          inspectLoading,
           inspectError,
-          disabled,
-          fieldError,
-          onDraft: updateDraft,
-          onRetentionMode: (retainMode) => updateDraft({ retainMode }),
-          sessionControl: h(SessionPicker, {
-            entries,
-            selectedId,
-            onSelect: setPickedId,
-            listAvailable: props.sessions !== null && props.sessions !== undefined,
-            phase: sessionList !== null && sessionList !== undefined ? sessionList.phase : 'ready',
-            listError: sessionList !== null && sessionList !== undefined ? sessionList.error : null,
-            refresh: inspectLoading,
-            onRefresh: refresh,
-          }),
+          inspectLoading,
+          sessionId: selectedId,
+          reasons: budgetReasons,
         }),
-        h(ModelSection, {
-          draft: draft ?? draftFromValue({}),
-          routes,
-          modelsStatus: modelsInspect.status,
-          modelsEnabled,
-          modelsError,
-          route: draftRoute,
-          routeWarning,
-          disabled,
-          fieldError,
-          onDraft: updateDraft,
-          onProvider: (value) => updateDraft(value === '' ? { provider: '', model: '' } : { provider: value }),
-          onModel: (value) => updateDraft(value === '' ? { provider: '', model: '' } : { model: value }),
-        }),
-        h(AdvancedSection, { draft: draft ?? draftFromValue({}), disabled, fieldError, onDraft: updateDraft }),
         h(StatusSection, {
           sessionId: selectedId,
           engine,
@@ -1479,6 +1760,7 @@ window.__ModuleLoader__.load({
           onReload: reloadHost,
         }),
       )
+
     }
 
     /** One stable row-config entry shared by every assembly key. */
@@ -1501,156 +1783,193 @@ window.__ModuleLoader__.load({
 
     // ── host theme styles ─────────────────────────────────────────────────
 
-    const STYLE = `
-.dsh-bc-page{--bc-accent:#3388BB;--bc-accent-ink:color-mix(in srgb,var(--bc-accent) 72%,var(--dsw-alias-label-primary));--bc-accent-soft:color-mix(in srgb,var(--bc-accent) 9%,transparent);--bc-on-accent:#fff;display:flex;flex-direction:column;gap:24px;min-width:0;max-width:960px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;container-type:inline-size;container-name:better-compact;overflow-wrap:anywhere;color-scheme:inherit}
+    const STYLE = `.dsh-bc-page{--bc-accent:#3388BB;--bc-accent-ink:color-mix(in srgb,var(--bc-accent) 72%,var(--dsw-alias-label-primary));--bc-accent-soft:color-mix(in srgb,var(--bc-accent) 10%,transparent);--bc-on-accent:#fff;display:flex;flex-direction:column;gap:20px;min-width:0;max-width:1040px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;container-type:inline-size;container-name:better-compact;overflow-wrap:anywhere;color-scheme:inherit}
 .dsh-bc-page *{box-sizing:border-box}
-.dsh-bc-page-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
-.dsh-bc-title{margin:0;font-size:18px;line-height:26px;font-weight:500}
-.dsh-bc-section{display:flex;flex-direction:column;gap:16px;min-width:0;padding:24px 0 0;border-top:1px solid var(--dsw-alias-border-l2)}
-.dsh-bc-section-head,.dsh-bc-subhead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;min-width:0}
-.dsh-bc-h3,.dsh-bc-h4{margin:0;font-size:14px;line-height:20px;font-weight:500}
-.dsh-bc-h4{font-size:13px;line-height:20px}
-.dsh-bc-caption,.dsh-bc-help{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
-.dsh-bc-note{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-error{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary)}
-.dsh-bc-strong{font-weight:500}
-.dsh-bc-mono{font-variant-numeric:tabular-nums;font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
-.dsh-bc-strategies{display:flex;flex-direction:column;gap:12px}
-.dsh-bc-modes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;padding:2px;border-radius:10px;background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2))}
-.dsh-bc-mode{display:flex;flex-direction:column;gap:8px;min-width:0;padding:0 12px 12px;border:0;border-radius:8px;cursor:pointer;background:transparent;transition:background-color 100ms ease}
-.dsh-bc-mode:hover:not([aria-disabled=true]){background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-bc-mode:active:not([aria-disabled=true]){background:var(--dsw-alias-interactive-bg-active)}
-.dsh-bc-mode[aria-checked=true]{background:var(--dsw-alias-bg-layer-1);box-shadow:inset 0 0 0 .5px var(--dsw-alias-border-l3)}
-.dsh-bc-mode[aria-checked=true]:hover:not([aria-disabled=true]){background:var(--dsw-alias-bg-layer-1)}
-.dsh-bc-mode[aria-disabled=true],.dsh-bc-page :disabled{opacity:.4;cursor:not-allowed}
-.dsh-bc-mode-head{position:relative;display:flex;align-items:center;justify-content:center;gap:6px;min-height:32px}
-.dsh-bc-mode-title{font-size:13px;font-weight:500}
-.dsh-bc-mode-indicator{display:none}
-.dsh-bc-mode[aria-checked=true] .dsh-bc-mode-indicator{display:block;position:absolute;bottom:0;left:0;right:0;height:2px;border-radius:2px;background:var(--bc-accent)}
+.dsh-bc-mono{font-family:var(--dsw-font-family-mono,ui-monospace,SFMono-Regular,Consolas,monospace);font-variant-numeric:tabular-nums}
+.dsh-bc-page-head,.dsh-bc-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;min-width:0}
+.dsh-bc-headMain{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.dsh-bc-headTools{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%}
+.dsh-bc-title{margin:0;font-size:20px;line-height:28px;font-weight:600;letter-spacing:-.01em}
+.dsh-bc-section{display:flex;flex-direction:column;gap:12px;min-width:0}
+.dsh-bc-pill{display:inline-flex;align-items:center;gap:6px;min-height:22px;padding-block:2px;padding:0 8px;border:1px solid var(--dsw-alias-border-l2);border-radius:999px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-secondary);font-size:11px;line-height:18px;white-space:nowrap}
+.dsh-bc-pillDot{display:block;width:5px;height:5px;flex:none;border-radius:50%;background:var(--dsw-alias-label-tertiary)}
+.dsh-bc-pill[data-tone=live] .dsh-bc-pillDot{background:var(--bc-accent)}
+.dsh-bc-pill[data-tone=warn] .dsh-bc-pillDot{background:var(--dsw-alias-state-warn-primary,var(--dsw-alias-label-primary))}
+.dsh-bc-pillMode{padding-left:6px;border-left:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-primary)}
+.dsh-bc-pillMeta{padding-left:6px;border-left:1px solid var(--dsw-alias-border-l2);color:var(--dsw-alias-label-tertiary);font-size:10px}
+.dsh-bc-runtimeHint{flex-basis:100%;margin:2px 0 0;color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-label-secondary));font-size:12px;line-height:18px}
+.dsh-bc-iconBtn{display:inline-flex;align-items:center;justify-content:center;flex:none;width:32px;height:32px;padding:0;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-secondary);cursor:pointer;transition:background-color 100ms ease,border-color 100ms ease}
+.dsh-bc-iconBtn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l3);color:var(--dsw-alias-label-primary)}
+.dsh-bc-page :is(button,input,select,summary,[role=radio]):focus{outline:none}
+.dsh-bc-page :is(button,input,select,summary,[role=radio]):focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--bc-accent));outline-offset:2px}
+.dsh-bc-page :disabled{opacity:.4;cursor:not-allowed}
+.dsh-bc-strategies{display:flex;flex-direction:column;gap:10px;min-width:0}
+.dsh-bc-modeDetails{min-width:0;font-size:12px}
+.dsh-bc-modeDetails>summary{display:flex;align-items:center;gap:4px;width:fit-content;cursor:pointer;color:var(--dsw-alias-label-tertiary);padding:2px 0;list-style:none}.dsh-bc-modeDetails>summary:before{content:'›';display:inline-block;font-size:13px;line-height:1;transition:transform 120ms ease}.dsh-bc-modeDetails[open]>summary:before{transform:rotate(90deg)}.dsh-bc-modeDetails>summary::-webkit-details-marker{display:none}.dsh-bc-modeDetails[open]>summary{color:var(--dsw-alias-label-primary)}
+.dsh-bc-modeDetails>summary:hover{color:var(--dsw-alias-label-primary)}
+.dsh-bc-modeDetails>p{margin:4px 0 0}
+.dsh-bc-modes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;min-width:0}
+.dsh-bc-mode{display:flex;flex-direction:column;gap:8px;min-width:0;padding:12px;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-2);cursor:pointer;transition:background-color 120ms ease,border-color 120ms ease}
+.dsh-bc-mode:hover:not([aria-disabled=true]){border-color:var(--dsw-alias-border-l3);background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-bc-mode:active:not([aria-disabled=true]){background:var(--dsw-alias-interactive-bg-active,var(--dsw-alias-interactive-bg-hover))}
+.dsh-bc-mode[aria-checked=true]{border-color:color-mix(in srgb,var(--bc-accent) 62%,var(--dsw-alias-border-l3));background:var(--bc-accent-soft)}
+.dsh-bc-mode[aria-checked=true]:hover:not([aria-disabled=true]){background:color-mix(in srgb,var(--bc-accent) 14%,transparent)}
+.dsh-bc-mode-head{display:flex;align-items:center;gap:8px;min-width:0}
+.dsh-bc-mode-title{font-size:13px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-primary)}
+.dsh-bc-mode-indicator{display:block;width:12px;height:12px;flex:none;border:1px solid var(--dsw-alias-border-l4);border-radius:50%;background:transparent}
+.dsh-bc-mode[aria-checked=true] .dsh-bc-mode-indicator{border-color:var(--bc-accent);background:radial-gradient(circle,var(--bc-accent) 0 3px,transparent 3.5px)}
 .dsh-bc-mode-description{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;min-height:36px}
 .dsh-bc-diagram-wrap{min-width:0;margin-top:auto;padding-top:4px}
-.dsh-bc-diagram{display:block;width:100%;max-width:180px;height:auto;margin:0 auto;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-diagram text{fill:currentColor;font-family:inherit;font-size:12px}
-.dsh-bc-node{fill:var(--dsw-alias-bg-layer-3);stroke:var(--dsw-alias-border-l2);stroke-width:1}
-.dsh-bc-node-strong{fill:var(--dsw-alias-bg-layer-2);stroke:var(--dsw-alias-border-l3)}
-.dsh-bc-node-accent{fill:var(--dsw-alias-bg-layer-2);stroke:color-mix(in srgb,var(--bc-accent) 55%,var(--dsw-alias-border-l2))}
-.dsh-bc-node-dashed{stroke-dasharray:3 3}
-.dsh-bc-edge{stroke:currentColor;stroke-width:1;fill:none;opacity:.65}
-.dsh-bc-strategy-foot{display:flex;justify-content:flex-end}
-.dsh-bc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 24px;align-items:start}
-.dsh-bc-field{display:flex;flex-direction:column;gap:4px;min-width:0}
-.dsh-bc-label{font-size:12px;font-weight:400;line-height:18px;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-input,.dsh-bc-btn{height:32px;min-width:0;border:.5px solid var(--dsw-alias-border-l3);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px}
-.dsh-bc-input{width:100%;padding:0 12px;transition:border-color 100ms ease}
-.dsh-bc-input:hover:not(:disabled){border-color:var(--dsw-alias-border-l4)}
-.dsh-bc-input:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}
-.dsh-bc-input[aria-invalid=true]{border-color:var(--dsw-alias-state-error-primary)}
+.dsh-bc-diagram{display:block;width:100%;max-width:168px;height:auto;margin:0 auto;color:var(--dsw-alias-label-secondary)}
+.dsh-bc-diagram text{fill:currentColor;font-family:inherit;font-size:11px}
+.dsh-bc-node{fill:var(--dsw-alias-bg-layer-1);stroke:var(--dsw-alias-border-l3);stroke-width:1}
+.dsh-bc-node-strong{fill:var(--dsw-alias-bg-layer-3);stroke:var(--dsw-alias-border-l4)}
+.dsh-bc-node-accent{fill:var(--bc-accent-soft);stroke:color-mix(in srgb,var(--bc-accent) 65%,var(--dsw-alias-border-l3))}
+.dsh-bc-node-dashed{stroke-dasharray:3 2}
+.dsh-bc-edge{stroke:currentColor;stroke-width:1;fill:none}
+.dsh-bc-workbench{display:grid;grid-template-columns:minmax(0,1fr) 304px;gap:20px;align-items:start;min-width:0}
+.dsh-bc-main{display:flex;flex-direction:column;gap:12px;min-width:0}
+.dsh-bc-rail{display:flex;flex-direction:column;gap:12px;min-width:0;position:sticky;top:0}
+.dsh-bc-card,.dsh-bc-panel{min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:12px;background:var(--dsw-alias-bg-layer-2)}
+.dsh-bc-card{display:flex;flex-direction:column;gap:14px;padding:16px;position:relative}
+.dsh-bc-panel{display:flex;flex-direction:column;gap:10px;padding:12px}
+.dsh-bc-cardHead,.dsh-bc-panelHead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;min-width:0}
+.dsh-bc-cardHead .dsh-bc-toggle{margin-left:auto}
+.dsh-bc-h3,.dsh-bc-h4{margin:0;font-weight:500}
+.dsh-bc-h3{font-size:14px;line-height:20px}
+.dsh-bc-titleRow{display:flex;align-items:center;gap:6px;min-width:0}
+.dsh-bc-h4{font-size:13px;line-height:20px}
+.dsh-bc-caption,.dsh-bc-helpText{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
+.dsh-bc-note{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.dsh-bc-error{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary)}
+.dsh-bc-statusLine{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-state-warn-primary,var(--dsw-alias-label-secondary))}
+.dsh-bc-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.dsh-bc-fieldRow{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;min-width:0}
+.dsh-bc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 16px;min-width:0}
+.dsh-bc-label{font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-label-secondary)}
+.dsh-bc-input,.dsh-bc-select select{width:100%;min-width:0;height:32px;border:1px solid var(--dsw-alias-border-l3);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px;transition:border-color 100ms ease,background-color 100ms ease}
+.dsh-bc-input{padding:0 10px}.dsh-bc-page input[type=number]{appearance:textfield;-moz-appearance:textfield}.dsh-bc-page input[type=number]::-webkit-outer-spin-button,.dsh-bc-page input[type=number]::-webkit-inner-spin-button{appearance:none;margin:0}
+.dsh-bc-input::placeholder{color:var(--dsw-alias-label-dimmed)}
+.dsh-bc-input:hover:not(:disabled),.dsh-bc-select select:hover:not(:disabled){border-color:var(--dsw-alias-border-l4)}
+.dsh-bc-input:focus-visible,.dsh-bc-select select:focus-visible{border-color:var(--bc-accent)}
+.dsh-bc-input[aria-invalid=true],.dsh-bc-select select[aria-invalid=true]{border-color:var(--dsw-alias-state-error-primary)}
+.dsh-bc-select{position:relative;min-width:0}
+.dsh-bc-select select{appearance:none;-webkit-appearance:none;padding:0 30px 0 10px;cursor:pointer}
+.dsh-bc-chevron{position:absolute;right:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--dsw-alias-label-tertiary)}
 .dsh-bc-number{position:relative;min-width:0}
-.dsh-bc-number .dsh-bc-input{padding-right:72px}
-.dsh-bc-unit{position:absolute;right:28px;top:7px;pointer-events:none;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
-.dsh-bc-check{display:flex;align-items:center;gap:8px;min-height:32px;cursor:pointer}
-.dsh-bc-check input{margin:0;flex:none;width:16px;height:16px;accent-color:var(--bc-accent)}
-.dsh-bc-check:has(:disabled){cursor:not-allowed}
-.dsh-bc-check:hover:has(:not(:disabled)) .dsh-bc-label{color:var(--bc-accent-ink)}
-.dsh-bc-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--dsw-alias-border-l2)}
-.dsh-bc-row-label{min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px}
-.dsh-bc-row-value{min-width:0;text-align:right;font-size:12px;overflow-wrap:anywhere}
-.dsh-bc-snapshot{display:flex;flex-direction:column;gap:12px;padding:12px;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;min-width:0}
-.dsh-bc-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
-.dsh-bc-metric{display:flex;flex-direction:column;gap:4px;min-width:0}
-.dsh-bc-metric-value{font-size:14px;line-height:20px;font-weight:500}
-.dsh-bc-metric-primary .dsh-bc-metric-value{color:var(--dsw-alias-label-primary)}
-.dsh-bc-budget-editor{display:flex;flex-direction:column;gap:16px;min-width:0;padding-top:8px}
-.dsh-bc-threshold{display:flex;flex-direction:column;gap:8px;min-width:0}
-.dsh-bc-threshold>.dsh-bc-field{display:grid;grid-template-columns:minmax(0,1fr) 104px;align-items:center}
-.dsh-bc-threshold .dsh-bc-error{grid-column:1 / -1}
-.dsh-bc-threshold .dsh-bc-number .dsh-bc-input{padding-left:8px;padding-right:40px}
-.dsh-bc-threshold .dsh-bc-unit{right:24px}
-.dsh-bc-range{appearance:none;display:block;width:100%;height:6px;margin:8px 0 0;border-radius:6px;background:linear-gradient(to right,var(--bc-accent) var(--bc-range-progress,50%),var(--dsw-alias-border-l3) var(--bc-range-progress,50%));cursor:pointer;accent-color:var(--bc-accent)}
-.dsh-bc-range::-webkit-slider-thumb{appearance:none;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-bg-layer-3);border:2px solid var(--bc-accent);transition:background-color 100ms ease}
-.dsh-bc-range::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-bg-layer-3);border:2px solid var(--bc-accent)}
+.dsh-bc-number .dsh-bc-input{padding-right:56px}
+.dsh-bc-number-inline{flex:none;width:88px}
+.dsh-bc-number-inline .dsh-bc-input{height:28px;padding:0 22px 0 8px;text-align:right;font-size:12px}
+.dsh-bc-unit{position:absolute;right:10px;top:50%;transform:translateY(-50%);pointer-events:none;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:18px}
+.dsh-bc-ratio{display:flex;flex-direction:column;gap:8px;min-width:0}
+.dsh-bc-ratioHead{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
+.dsh-bc-range{appearance:none;-webkit-appearance:none;display:block;width:100%;height:6px;margin:2px 0 0;border-radius:999px;background:linear-gradient(to right,var(--bc-accent) var(--bc-range-progress,50%),var(--dsw-alias-border-l3) var(--bc-range-progress,50%));cursor:pointer}
+.dsh-bc-range::-webkit-slider-thumb{appearance:none;width:16px;height:16px;border:2px solid var(--bc-accent);border-radius:50%;background:var(--dsw-alias-bg-layer-1);transition:background-color 100ms ease}
+.dsh-bc-range::-moz-range-thumb{width:12px;height:12px;border:2px solid var(--bc-accent);border-radius:50%;background:var(--dsw-alias-bg-layer-1)}
 .dsh-bc-range:hover:not(:disabled)::-webkit-slider-thumb{background:var(--bc-accent-soft)}
 .dsh-bc-range:active:not(:disabled)::-webkit-slider-thumb{background:var(--bc-accent)}
-.dsh-bc-range-ticks{display:flex;justify-content:space-between;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-variant-numeric:tabular-nums}
-.dsh-bc-draft-allocation{display:flex;flex-direction:column;gap:12px;min-width:0}
-.dsh-bc-draft-allocation>.dsh-bc-subhead .dsh-bc-metric:last-child{align-items:flex-end}
-.dsh-bc-draft-allocation>.dsh-bc-subhead .dsh-bc-metric:last-child .dsh-bc-metric-value{font-size:13px;line-height:20px}
-.dsh-bc-retention,.dsh-bc-composition{display:flex;flex-direction:column;gap:16px;padding-top:24px;border-top:1px solid var(--dsw-alias-border-l2);min-width:0}
-.dsh-bc-bar-wrap{display:flex;flex-direction:column;gap:8px;min-width:0}
-.dsh-bc-bar{position:relative;min-width:0;height:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:4px;overflow:hidden;background:var(--dsw-alias-bg-layer-3)}
+.dsh-bc-scale{display:flex;justify-content:space-between;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px;font-variant-numeric:tabular-nums}
+.dsh-bc-retainChoice{display:flex;flex-direction:column;gap:6px;min-width:0;padding:0;margin:0;border:0}
+.dsh-bc-segmented{display:flex;gap:2px;min-height:32px;padding:2px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-bc-segment{position:relative;display:flex;align-items:center;justify-content:center;flex:1;min-width:0;min-height:26px;padding:2px 8px;border-radius:6px;color:var(--dsw-alias-label-secondary);font-size:12px;cursor:pointer;transition:background-color 100ms ease,color 100ms ease}
+.dsh-bc-segment input{position:absolute;width:1px;height:1px;margin:0;opacity:0}
+.dsh-bc-segment:hover:not([data-disabled=true]){color:var(--dsw-alias-label-primary)}
+.dsh-bc-segment[data-checked=true]{background:var(--dsw-alias-bg-layer-1);color:var(--bc-accent-ink);font-weight:500;outline:.5px solid var(--dsw-alias-border-l3);outline-offset:-.5px}
+.dsh-bc-segment:has(input:disabled){opacity:.4;cursor:not-allowed}
+.dsh-bc-segment:has(input:focus-visible){outline:2px solid var(--bc-accent);outline-offset:2px}
+.dsh-bc-toggle{display:flex;flex-direction:column;gap:4px;min-width:0}
+.dsh-bc-switch{position:relative;display:inline-flex;align-items:center;gap:8px;min-height:32px;cursor:pointer;user-select:none}
+.dsh-bc-switch input{position:absolute;width:1px;height:1px;margin:0;opacity:0;pointer-events:none}
+.dsh-bc-switchTrack{display:block;width:32px;height:18px;flex:none;padding:2px;border:1px solid var(--dsw-alias-border-l3);border-radius:999px;background:var(--dsw-alias-bg-layer-3);transition:background-color 120ms ease,border-color 120ms ease}
+.dsh-bc-switchThumb{display:block;width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-label-secondary);transition:transform 120ms ease,background-color 120ms ease}
+.dsh-bc-switch input:checked + .dsh-bc-switchTrack{background:var(--bc-accent);border-color:var(--bc-accent)}
+.dsh-bc-switch input:checked + .dsh-bc-switchTrack .dsh-bc-switchThumb{transform:translateX(14px);background:var(--bc-on-accent)}
+.dsh-bc-switch input:focus-visible + .dsh-bc-switchTrack{outline:2px solid var(--bc-accent);outline-offset:2px}
+.dsh-bc-switch:has(input:disabled){opacity:.4;cursor:not-allowed}
+.dsh-bc-switchLabel{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.dsh-bc-help{position:relative;flex:none;font-size:12px}
+.dsh-bc-help>summary{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;color:var(--dsw-alias-label-tertiary);cursor:pointer;list-style:none}
+.dsh-bc-help>summary::-webkit-details-marker{display:none}
+.dsh-bc-help>summary:hover,.dsh-bc-help[open]>summary{background:var(--dsw-alias-interactive-bg-hover);color:var(--dsw-alias-label-primary)}
+.dsh-bc-helpBody{position:absolute;right:0;top:26px;z-index:20;width:300px;max-width:min(300px,70vw);padding:10px 12px;border:1px solid var(--dsw-alias-border-l3);border-radius:8px;background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.dsh-bc-helpBody p{margin:0 0 6px}
+.dsh-bc-helpBody p:last-child{margin-bottom:0}
+.dsh-bc-chip{display:inline-flex;align-items:center;height:20px;padding:0 6px;border:1px solid var(--dsw-alias-border-l2);border-radius:4px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-secondary);font-size:11px;line-height:18px;white-space:nowrap}
+.dsh-bc-chip-quiet{border-color:transparent;background:transparent;color:var(--dsw-alias-label-tertiary)}
+.dsh-bc-session{display:flex;align-items:center;gap:6px;min-width:0;max-width:360px;flex:0 1 auto}
+.dsh-bc-session .dsh-bc-select{flex:1;min-width:0}
+.dsh-bc-session .dsh-bc-select select{height:30px;font-size:12px}
+.dsh-bc-srOnly,.dsh-bc-sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border:0}
+.dsh-bc-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;min-width:0}
+.dsh-bc-metric{display:flex;flex-direction:column;gap:2px;min-width:0}
+.dsh-bc-metric .dsh-bc-caption{font-size:11px;line-height:16px}
+.dsh-bc-metric-value{min-width:0;font-size:14px;line-height:20px;font-weight:500;font-variant-numeric:tabular-nums}
+.dsh-bc-metric-primary .dsh-bc-metric-value{color:var(--dsw-alias-label-primary)}
+.dsh-bc-metrics-rail{grid-template-columns:minmax(0,1fr);gap:3px}
+.dsh-bc-metrics-rail .dsh-bc-metric{flex-direction:row;align-items:baseline;justify-content:space-between;gap:12px}
+.dsh-bc-metrics-rail .dsh-bc-metric .dsh-bc-caption{flex:none}
+.dsh-bc-metrics-rail .dsh-bc-metric-value{font-size:12px;line-height:18px;overflow-wrap:anywhere;text-align:right}
+.dsh-bc-bar-wrap{display:flex;flex-direction:column;gap:6px;min-width:0}
+.dsh-bc-bar{position:relative;min-width:0;height:14px;border:1px solid var(--dsw-alias-border-l2);border-radius:4px;overflow:hidden;background:var(--dsw-alias-interactive-bg-hover)}
 .dsh-bc-bar-track{display:flex;width:100%;height:100%}
-.dsh-bc-bar-seg{flex:none;height:100%;border-right:1px solid var(--dsw-alias-border-l2)}
-.dsh-bc-seg-fixed,.dsh-bc-swatch-fixed{background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 60%,transparent)}
-.dsh-bc-seg-history,.dsh-bc-swatch-history{background:color-mix(in srgb,var(--bc-accent) 35%,transparent)}
+.dsh-bc-bar-seg{flex:none;height:100%;border-right:1px solid color-mix(in srgb,var(--dsw-alias-border-l2) 60%,transparent)}
+.dsh-bc-seg-fixed,.dsh-bc-swatch-fixed{background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 55%,transparent)}
+.dsh-bc-seg-history,.dsh-bc-swatch-history{background:color-mix(in srgb,var(--bc-accent) 32%,transparent)}
 .dsh-bc-seg-tail,.dsh-bc-swatch-tail{background:var(--bc-accent)}
 .dsh-bc-seg-summary,.dsh-bc-swatch-summary{background:repeating-linear-gradient(135deg,var(--bc-accent) 0 2px,transparent 2px 5px)}
 .dsh-bc-seg-headroom,.dsh-bc-swatch-headroom{background:repeating-linear-gradient(135deg,var(--dsw-alias-label-tertiary) 0 1px,transparent 1px 4px);opacity:.5}
 .dsh-bc-seg-free{background:transparent}
 .dsh-bc-trigger,.dsh-bc-current-line{position:absolute;top:0;bottom:0;pointer-events:none;max-width:100%;transform:translateX(-1px);border-left:2px solid var(--dsw-alias-label-primary)}
 .dsh-bc-current-line{border-left:1px dashed var(--dsw-alias-label-primary)}
-.dsh-bc-bar-ticks{display:flex;justify-content:space-between;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-variant-numeric:tabular-nums}
-.dsh-bc-bar-ticks span{position:relative;flex:1;text-align:center}
-.dsh-bc-bar-ticks span:first-child{text-align:left;flex:.5}
-.dsh-bc-bar-ticks span:last-child{text-align:right;flex:.5}
-.dsh-bc-marker-legend{display:flex;flex-wrap:wrap;gap:16px;font-size:12px;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-marker-legend span{display:flex;align-items:center;gap:8px}
-.dsh-bc-key-trigger,.dsh-bc-key-current{display:inline-block;height:12px;border-left:2px solid var(--dsw-alias-label-primary)}
+.dsh-bc-markerLegend{display:flex;flex-wrap:wrap;gap:12px;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:16px}
+.dsh-bc-markerLegend span{display:flex;align-items:center;gap:6px}
+.dsh-bc-key-trigger,.dsh-bc-key-current{display:inline-block;height:10px;border-left:2px solid var(--dsw-alias-label-primary)}
 .dsh-bc-key-current{border-left:1px dashed var(--dsw-alias-label-primary)}
-.dsh-bc-legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:0;padding:0;list-style:none;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
-.dsh-bc-legend li{display:flex;align-items:center;gap:8px}
-.dsh-bc-swatch{display:block;width:12px;height:12px;flex:none;border:1px solid var(--dsw-alias-border-l2);border-radius:2px}
-.dsh-bc-retain-choice{min-width:0;padding:0;margin:0;border:0;display:flex;flex-direction:column;gap:8px}
-.dsh-bc-retain-choice legend{padding:0;margin-bottom:8px}
-.dsh-bc-segmented{display:flex;border:0;border-radius:10px;min-height:32px;padding:2px;gap:2px;background:var(--dsw-alias-bg-layer-2)}
-.dsh-bc-segment{position:relative;display:flex;align-items:center;justify-content:center;flex:1;min-width:0;min-height:28px;border-radius:8px;padding:4px 8px;color:var(--dsw-alias-label-secondary);font-size:13px;cursor:pointer;transition:background-color 100ms ease}
-.dsh-bc-segment input{position:absolute;opacity:0;width:1px;height:1px;margin:0}
-.dsh-bc-segment[data-checked=true]{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-weight:500;box-shadow:inset 0 0 0 .5px var(--dsw-alias-border-l3)}
-.dsh-bc-segment:hover:not(:has(:disabled)){background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-bc-segment:active:not(:has(:disabled)){background:var(--dsw-alias-interactive-bg-active)}
-.dsh-bc-segment:has(:disabled){opacity:.4;cursor:not-allowed}
-.dsh-bc-retention-result{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:24px;min-width:0}
-.dsh-bc-retention-result>.dsh-bc-metric{align-items:flex-end}
-.dsh-bc-retention-flow{display:grid;grid-template-columns:1fr 1fr;min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;overflow:hidden}
-.dsh-bc-flow-older,.dsh-bc-flow-tail{display:flex;flex-direction:column;gap:4px;padding:12px;font-size:13px}
-.dsh-bc-flow-summary{display:flex;justify-content:space-between;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-flow-tail{border-left:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
-.dsh-bc-explanation{min-width:0;font-size:12px;line-height:18px}
-.dsh-bc-explanation>summary{cursor:pointer;color:var(--dsw-alias-label-secondary);width:fit-content;padding:4px 0;border-radius:4px}
-.dsh-bc-explanation>summary:hover{color:var(--dsw-alias-label-primary)}
-.dsh-bc-explanation>summary:active{background:var(--dsw-alias-interactive-bg-active)}
-.dsh-bc-explanation-body{display:flex;flex-direction:column;gap:8px;padding-top:12px;min-width:0}
-.dsh-bc-details{min-width:0;border-top:1px solid var(--dsw-alias-border-l2)}
-.dsh-bc-details>summary{cursor:pointer;padding:24px 0 8px;font-size:14px;line-height:20px;font-weight:500}
-.dsh-bc-details>summary:hover{color:var(--bc-accent-ink)}
-.dsh-bc-details-body,.dsh-bc-policy-body{display:flex;flex-direction:column;gap:16px;padding:16px 0 0;min-width:0}
-.dsh-bc-policy{min-width:0;border-top:1px solid var(--dsw-alias-border-l2)}
-.dsh-bc-policy>summary{padding:8px 0;cursor:pointer;font-size:13px;overflow-wrap:anywhere}
-.dsh-bc-policy-body{padding:8px 0 16px}
-.dsh-bc-status-record{display:flex;flex-direction:column;gap:12px}
-.dsh-bc-status-line{margin:0;font-size:13px;font-weight:500}
-.dsh-bc-status-failed,.dsh-bc-status-persistence-error{color:var(--dsw-alias-state-error-primary)}
-.dsh-bc-status-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}
-.dsh-bc-continuation{display:flex;flex-direction:column;gap:8px}
-.dsh-bc-reasons,.dsh-bc-bullets{margin:0;padding-left:16px;display:flex;flex-direction:column;gap:8px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
-.dsh-bc-session{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;flex:0 1 320px}
-.dsh-bc-session select{flex:1;width:0;font-size:12px}
-.dsh-bc-btn{padding:0 12px;white-space:nowrap;cursor:pointer;transition:background-color 100ms ease}
-.dsh-bc-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-bc-btn:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}
-.dsh-bc-btn-remove:hover:not(:disabled){color:var(--dsw-alias-state-error-primary)}
-.dsh-bc-btn-primary{background:color-mix(in srgb,var(--bc-accent) 85%,black);border-color:transparent;color:var(--bc-on-accent)}
-.dsh-bc-btn-primary:hover:not(:disabled){background:color-mix(in srgb,var(--bc-accent) 72%,black)}
-.dsh-bc-btn-primary:active:not(:disabled){background:color-mix(in srgb,var(--bc-accent) 72%,black)}
-.dsh-bc-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:16px 0 0;border-top:1px solid var(--dsw-alias-border-l2)}
-.dsh-bc-footer-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:8px}
+.dsh-bc-legend{display:flex;flex-wrap:wrap;gap:4px 14px;margin:0;padding:0;list-style:none;color:var(--dsw-alias-label-secondary);font-size:11px;line-height:18px}
+.dsh-bc-legend li{display:flex;align-items:center;gap:6px;min-width:0}
+.dsh-bc-swatch{display:block;width:10px;height:10px;flex:none;border:1px solid var(--dsw-alias-border-l2);border-radius:2px}
+.dsh-bc-previewTitle{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
+.dsh-bc-previewBody{display:flex;flex-direction:column;gap:10px;min-width:0}
+.dsh-bc-previewRow{display:flex;flex-direction:column;gap:6px;min-width:0}
+.dsh-bc-previewLabel{display:flex;align-items:baseline;justify-content:space-between;gap:12px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.dsh-bc-previewLabel .dsh-bc-mono{color:var(--dsw-alias-label-primary);font-size:12px}
+.dsh-bc-previewArrow{display:flex;align-items:center;justify-content:center;height:14px;color:var(--dsw-alias-label-tertiary);margin:-3px 0}
+.dsh-bc-railFoot{display:flex;justify-content:flex-end;min-height:20px}
+.dsh-bc-footer{position:sticky;bottom:0;z-index:10;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 0;border-top:1px solid var(--dsw-alias-border-l2);background:color-mix(in srgb,var(--dsw-alias-bg-layer-1) 92%,transparent);backdrop-filter:blur(8px)}
+.dsh-bc-footer-copy{display:flex;flex-direction:column;gap:6px;min-width:0;flex:1}
 .dsh-bc-actions{display:flex;justify-content:flex-end;gap:8px;margin-left:auto}
-.dsh-bc-banner{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--dsw-alias-label-secondary);font-size:12px}
-.dsh-bc-banner-title{font-size:12px;font-weight:400}
-.dsh-bc-sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
-.dsh-bc-page :is(button,input,select,summary,[role=radio]):focus{outline:none}
-.dsh-bc-page :is(button,input,select,summary,[role=radio]):focus-visible,.dsh-bc-segment:has(input:focus-visible){outline:var(--dsw-focus-ring-width,2px) solid var(--bc-accent);outline-offset:2px}
-@container better-compact (max-width:560px){.dsh-bc-grid,.dsh-bc-status-grid{grid-template-columns:1fr}.dsh-bc-metrics{gap:8px}.dsh-bc-modes{grid-template-columns:1fr}.dsh-bc-mode{display:grid;grid-template-columns:minmax(0,1fr) minmax(140px,180px);align-items:center;gap:8px 16px;padding:8px 12px}.dsh-bc-mode-head,.dsh-bc-mode-description{grid-column:1}.dsh-bc-mode-head{justify-content:flex-start;align-self:end}.dsh-bc-mode-description{min-height:0;align-self:start}.dsh-bc-diagram-wrap{grid-column:2;grid-row:1 / span 2;margin:0;padding:0}.dsh-bc-section-head{align-items:stretch;flex-direction:column}.dsh-bc-session{flex:auto}.dsh-bc-retention-result{grid-template-columns:1fr;gap:12px}.dsh-bc-retention-result>.dsh-bc-metric{flex-direction:row;align-items:baseline;justify-content:space-between}.dsh-bc-footer-copy{flex-basis:100%}.dsh-bc-actions{margin-left:auto}.dsh-bc-range{height:32px;margin:0;background:linear-gradient(to right,var(--bc-accent) var(--bc-range-progress,50%),var(--dsw-alias-border-l3) var(--bc-range-progress,50%)) center / 100% 6px no-repeat}.dsh-bc-explanation>summary,.dsh-bc-policy>summary{min-height:32px;display:flex;align-items:center}}
-@container better-compact (max-width:360px){.dsh-bc-metrics{grid-template-columns:1fr}.dsh-bc-metrics .dsh-bc-metric{flex-direction:row;align-items:baseline;justify-content:space-between}.dsh-bc-bar-ticks span:nth-child(even){visibility:hidden}.dsh-bc-draft-allocation>.dsh-bc-subhead{align-items:stretch;flex-direction:column}.dsh-bc-draft-allocation>.dsh-bc-subhead .dsh-bc-metric{align-items:baseline;flex-direction:row;justify-content:space-between}.dsh-bc-threshold>.dsh-bc-field{grid-template-columns:minmax(0,1fr) 96px}}
+.dsh-bc-btn{display:inline-flex;align-items:center;justify-content:center;height:32px;padding:0 12px;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;background:transparent;color:var(--dsw-alias-label-primary);font:inherit;font-size:12px;line-height:18px;font-weight:500;white-space:nowrap;cursor:pointer;transition:background-color 100ms ease,border-color 100ms ease}
+.dsh-bc-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover);border-color:var(--dsw-alias-border-l3)}
+.dsh-bc-btn-primary{background:color-mix(in srgb,var(--bc-accent) 85%,black);border-color:transparent;color:var(--bc-on-accent)}
+.dsh-bc-btn-primary:hover:not(:disabled){background:color-mix(in srgb,var(--bc-accent) 72%,black);border-color:transparent}
+.dsh-bc-btn-remove:hover:not(:disabled){color:var(--dsw-alias-state-error-primary)}
+.dsh-bc-details{min-width:0;border-top:1px solid var(--dsw-alias-border-l2);padding-top:2px}
+.dsh-bc-details>summary{display:flex;align-items:center;gap:8px;cursor:pointer;padding:10px 0;font-size:13px;line-height:20px;font-weight:500;color:var(--dsw-alias-label-secondary);list-style:none}
+.dsh-bc-details>summary::-webkit-details-marker{display:none}
+.dsh-bc-details>summary:hover{color:var(--dsw-alias-label-primary)}
+.dsh-bc-details-body,.dsh-bc-policy-body{display:flex;flex-direction:column;gap:14px;padding:4px 0 12px;min-width:0}
+.dsh-bc-policy{min-width:0;border-top:1px solid var(--dsw-alias-border-l2)}
+.dsh-bc-policy>summary{padding:8px 0;cursor:pointer;font-size:12px;overflow-wrap:anywhere}
+.dsh-bc-policy-body{padding:4px 0 12px}
+.dsh-bc-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:6px 0;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.dsh-bc-row-label{min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px}
+.dsh-bc-row-value{min-width:0;text-align:right;font-size:12px;overflow-wrap:anywhere}
+.dsh-bc-status-record{display:flex;flex-direction:column;gap:12px}
+.dsh-bc-status-line{margin:0;font-size:13px;line-height:20px;font-weight:500}
+.dsh-bc-status-failed,.dsh-bc-status-persistence-error{color:var(--dsw-alias-state-error-primary)}
+.dsh-bc-status-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 20px}
+.dsh-bc-continuation{display:flex;flex-direction:column;gap:8px}
+.dsh-bc-reasons,.dsh-bc-bullets{margin:0;padding-left:16px;display:flex;flex-direction:column;gap:6px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.dsh-bc-reason p{margin:2px 0 0}
+.dsh-bc-hint{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
+.dsh-bc-customRoute{min-width:0;border-top:1px solid var(--dsw-alias-border-l2);padding-top:8px}
+.dsh-bc-customRoute>summary{cursor:pointer;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary);padding:4px 0}
+.dsh-bc-customRoute[open]>summary{margin-bottom:8px}
+.dsh-bc-banner{display:none}
+@container better-compact (max-width:860px){.dsh-bc-workbench{grid-template-columns:minmax(0,1fr)}.dsh-bc-rail{position:static}.dsh-bc-metrics-rail .dsh-bc-metric-value{font-size:13px}}
+@container better-compact (max-width:640px){.dsh-bc-modes{grid-template-columns:1fr}.dsh-bc-mode{display:grid;grid-template-columns:minmax(0,1fr) 150px;align-items:center;gap:4px 12px;padding:10px 12px}.dsh-bc-mode-head,.dsh-bc-mode-description{grid-column:1}.dsh-bc-mode-description{min-height:0}.dsh-bc-diagram-wrap{grid-column:2;grid-row:1 / span 2;margin:0;padding:0}.dsh-bc-fieldRow,.dsh-bc-grid,.dsh-bc-status-grid{grid-template-columns:minmax(0,1fr)}.dsh-bc-headTools{width:100%}.dsh-bc-session{max-width:none;flex:1}.dsh-bc-metrics{grid-template-columns:1fr;gap:6px}.dsh-bc-metric{flex-direction:row;align-items:baseline;justify-content:space-between;gap:12px}.dsh-bc-footer-copy{flex-basis:100%}.dsh-bc-actions{margin-left:auto}.dsh-bc-helpBody{position:static;width:auto;max-width:none;margin-top:6px}.dsh-bc-title{font-size:18px;line-height:26px}.dsh-bc-session .dsh-bc-select select{height:32px}}
+@container better-compact (max-width:380px){.dsh-bc-mode{grid-template-columns:minmax(0,1fr)}.dsh-bc-diagram-wrap{display:none}.dsh-bc-actions{width:100%}.dsh-bc-actions .dsh-bc-btn{flex:1}.dsh-bc-ratioHead{flex-wrap:wrap}}
+@container better-compact (max-width:560px){.dsh-bc-helpBody{position:static;width:auto;max-width:none;margin-top:6px}.dsh-bc-metrics{gap:6px}.dsh-bc-session{max-width:none}.dsh-bc-ratioHead{gap:8px}}
 @media (prefers-reduced-motion:reduce){.dsh-bc-page *{transition:none!important;animation:none!important}}
 `
 
