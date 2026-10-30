@@ -241,7 +241,13 @@ test('buildBudgetPreview reports threshold, retain, fixed prefix and a below-tri
     modelInfo: info,
   })
   assert.deepEqual(budget, {
+    target: { provider: 'p', model: 'm' },
     contextWindow: 1000,
+    reservedCompletionTokens: 20,
+    messageBudgetTokens: 980,
+    headroomTokens: 100,
+    pressureBudgetTokens: 880,
+    ratioThresholdTokens: 500,
     currentTokens: 310,
     measurement: 'estimated',
     fixedTokens: 10,
@@ -250,6 +256,9 @@ test('buildBudgetPreview reports threshold, retain, fixed prefix and a below-tri
     summaryMaxTokens: 50,
   })
   assert.equal(preview.beforeTokens, 310)
+  assert.equal(preview.retainedTokens, 100)
+  assert.equal(preview.replacedTokens, 200)
+  assert.equal(preview.checkpointFramingTokens, NATIVE_CHECKPOINT_FRAMING_TOKENS)
   assert.equal(preview.rangeStart, 2)
   assert.equal(preview.rangeEnd, 3)
   // fixed 10 + tail node3 100 + maxTokens 50
@@ -286,7 +295,13 @@ test('buildBudgetPreview reports unknown capacity and no safe range without inve
     measurement,
     modelInfo: undefined,
   })
+  assert.equal(first.budget.target, null)
   assert.equal(first.budget.contextWindow, null)
+  assert.equal(first.budget.reservedCompletionTokens, null)
+  assert.equal(first.budget.messageBudgetTokens, null)
+  assert.equal(first.budget.headroomTokens, null)
+  assert.equal(first.budget.pressureBudgetTokens, null)
+  assert.equal(first.budget.ratioThresholdTokens, null)
   assert.equal(first.budget.thresholdTokens, null)
   assert.equal(first.budget.currentTokens, 10)
   assert.equal(first.budget.measurement, 'estimated')
@@ -433,6 +448,9 @@ test('inspectPlugin inspects a live session and never calls the LLM or mutates i
   assert.equal(payload.lastCompaction.mode, 'goal')
   assert.equal(payload.lastCompaction.status, 'completed')
   assert.equal(payload.lastCompaction.trigger, 'manual')
+  assert.equal(payload.preview.retainedTokens, 420)
+  assert.equal(payload.preview.replacedTokens, 800)
+  assert.equal(payload.preview.checkpointFramingTokens, NATIVE_CHECKPOINT_FRAMING_TOKENS)
   assert.equal(payload.preview.rangeStart, 2)
   assert.equal(payload.preview.rangeEnd, 3)
   assert.equal(payload.preview.afterUpperBoundTokens, 480 + NATIVE_CHECKPOINT_FRAMING_TOKENS)

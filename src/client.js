@@ -1,5 +1,5 @@
 /**
- * dsh-better-compact — zero-build browser half (S3 visual settings page).
+ * dsh-better-compact — zero-build browser settings.
  *
  * The stable entry is registered under the canonical row key and both Apollo
  * alias keys so standalone and Apollo assemblies share one implementation.
@@ -13,8 +13,8 @@
  *     `/better-compact/api/inspect` and `/better-compact/api/models`;
  *   - saving goes exclusively through `form.mutate(ops, revision)` — there is
  *     no plugin-owned write HTTP route;
- *   - token numbers, safe cuts, and the trigger come from the inspect payload;
- *     this module never re-implements the compaction/token algorithm;
+ *   - measured counts and safe cuts come from inspect; draft-only budget
+ *     arithmetic uses the inspected model capacity and conversation reservation;
  *   - host theme tokens are used for both light and dark surfaces.
  *
  * Strategy diagrams are schematics, not live token flows. Unknown values are
@@ -44,33 +44,27 @@ window.__ModuleLoader__.load({
     const MODES = Object.freeze(['native', 'goal', 'handoff'])
     const MODE_META = Object.freeze({
       native: Object.freeze({
-        label: 'DSH 原生',
-        description: '原生摘要与 checkpoint；近期原文保留。',
-        caption: '原生决定摘要请求；增强 effort / 缓存项不适用。',
+        label: '原生',
+        description: '历史摘要与近期原文',
+        caption: '摘要请求由原生引擎处理。',
       }),
       goal: Object.freeze({
-        label: 'Goal 增强',
-        badge: '默认',
-        description: '结合权威 Goal / Todo 生成交接摘要，不接管目标。',
-        caption: '无 Goal 也可运行；只读目标，不修改轮次或完成状态。',
+        label: '目标增强',
+        description: '结合目标与任务生成摘要',
+        caption: '目标与任务作为摘要输入；没有目标时也可压缩。',
       }),
       handoff: Object.freeze({
-        label: '文件 Handoff',
-        badge: null,
-        description: '临时文件交接，正文入原生记录，可在同会话继续。',
-        caption: '不新建会话或历史库；文件不是唯一恢复来源。',
+        label: '文件交接',
+        description: '保存交接文件，在本会话继续',
+        caption: '交接正文同时写入会话记录；手动压缩成功后可继续本会话。',
       }),
     })
     /** One-line summary used by the Plugins page before opening the row. */
     const SUMMARY =
-      '原生 / Goal 增强 / 文件 Handoff 压缩，附只读诊断。'
-    /** Strategy disclaimer required on the mode cards. */
-    const STRATEGY_NOTE =
-      '策略示意，非实时 token 流或缓存命中率。'
-    /** Native-mode applicability copy required by the spec. */
-    const NATIVE_NOT_APPLICABLE = '不适用：由原生实现决定'
-    /** Exact cache-priority copy required by the spec. */
-    const CACHE_PRIORITY_COPY = '优先复用缓存（尽可能保留 KV Cache 前缀）'
+      '压缩策略、上下文预算与会话诊断'
+    /** Enhanced-only controls are inactive in native mode. */
+    const NATIVE_NOT_APPLICABLE = '由原生引擎决定'
+    const CACHE_PRIORITY_COPY = '优先复用提示缓存'
     /** Empty session-list snapshot (stable identity for useSyncExternalStore). */
     const EMPTY_SESSION_LIST = Object.freeze({
       ids: Object.freeze([]),
@@ -88,26 +82,20 @@ window.__ModuleLoader__.load({
 
     /** Human token value; `null`/undefined is unknown, never 0. */
     function tokensText(value) {
-      if (typeof value !== 'number' || !Number.isFinite(value)) return 'unknown'
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '未知'
       const rounded = Math.round(value)
       return `${groupDigits(rounded)} tokens`
     }
 
-    /** Plain integer text; `null`/undefined is unknown. */
-    function numberText(value) {
-      if (typeof value !== 'number' || !Number.isFinite(value)) return 'unknown'
-      return groupDigits(Math.round(value))
-    }
-
     /** Ratio text as a percentage; unknown stays unknown. */
     function ratioText(value) {
-      if (typeof value !== 'number' || !Number.isFinite(value)) return 'unknown'
+      if (typeof value !== 'number' || !Number.isFinite(value)) return '未知'
       return `${Math.round(value * 10000) / 100}%`
     }
 
     /** Duration text; unknown stays unknown. */
     function durationText(value) {
-      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return 'unknown'
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) return '未知'
       if (value < 1000) return `${Math.round(value)} ms`
       return `${Math.round(value / 100) / 10} s`
     }
@@ -124,14 +112,38 @@ window.__ModuleLoader__.load({
       return Math.max(0, Math.min(100, (value / scale) * 100))
     }
 
-    /** Render an unknown token value without inventing a number. */
-    function valueOrUnknown(value, formatter) {
-      return value === null || value === undefined ? 'unknown' : formatter(value)
-    }
-
     // ── form draft ────────────────────────────────────────────────────────
 
     /** Convert one accepted form value into the editable draft (strings). */
+    const POLICY_NUMBERS = Object.freeze([
+      ['thresholdRatio', '触发比例', true], ['headroomTokens', '额外余量'],
+      ['maxTokens', '摘要输出上限'], ['compactionRetries', '压力残留重试'], ['maxOverflowRetries', '超限恢复次数'],
+    ])
+    const DEFAULT_RETAIN_RATIO = 0.16
+
+    function policyDraft(value = {}) {
+      const result = { provider: value.provider ?? '', model: value.model ?? '',
+        retainMode: value.retainTokens != null ? 'tokens' : value.retainRatio != null ? 'ratio' : 'inherit',
+        retainRatio: value.retainRatio != null ? String(value.retainRatio) : '',
+        retainTokens: value.retainTokens != null ? String(value.retainTokens) : '',
+        summaryMode: value.summarizationProvider === undefined ? 'inherit' : value.summarizationProvider === '' ? 'session' : 'custom',
+        summarizationProvider: value.summarizationProvider ?? '', summarizationModel: value.summarizationModel ?? '' }
+      for (const [key] of POLICY_NUMBERS) result[key] = value[key] == null ? '' : String(value[key])
+      return result
+    }
+
+    function policyValue(draft) {
+      const value = { provider: draft.provider, model: draft.model }
+      for (const [key] of POLICY_NUMBERS) if (draft[key] !== '') value[key] = Number(draft[key])
+      if (draft.retainMode === 'ratio' && draft.retainRatio !== '') value.retainRatio = Number(draft.retainRatio)
+      if (draft.retainMode === 'tokens' && draft.retainTokens !== '') value.retainTokens = Number(draft.retainTokens)
+      if (draft.summaryMode !== 'inherit') {
+        value.summarizationProvider = draft.summaryMode === 'session' ? '' : draft.summarizationProvider
+        value.summarizationModel = draft.summaryMode === 'session' ? '' : draft.summarizationModel
+      }
+      return value
+    }
+
     function draftFromValue(value) {
       const source = value !== null && typeof value === 'object' ? value : {}
       const hasRetainTokens = source.retainTokens !== undefined && source.retainTokens !== null
@@ -147,35 +159,22 @@ window.__ModuleLoader__.load({
         retainTokens: hasRetainTokens ? String(source.retainTokens) : '',
         cachePriority: source.cachePriority === true,
         auto: source.auto === true,
+        policies: (Array.isArray(source.modelPolicies) ? source.modelPolicies : []).map(policyDraft),
         maxTokens: typeof source.maxTokens === 'number' ? String(source.maxTokens) : '',
         compactionRetries: typeof source.compactionRetries === 'number' ? String(source.compactionRetries) : '',
         maxOverflowRetries: typeof source.maxOverflowRetries === 'number' ? String(source.maxOverflowRetries) : '',
       }
     }
 
-    /** Compare two drafts field by field (strings/booleans only). */
+    /** Compare scalar fields and the ordered model-policy drafts. */
     function equalDraft(left, right) {
       if (left === null || right === null) return left === right
       const keys = Object.keys(left)
       if (keys.length !== Object.keys(right).length) return false
       for (const key of keys) {
-        if (left[key] !== right[key]) return false
+        if (key === 'policies' ? JSON.stringify(left[key]) !== JSON.stringify(right[key]) : left[key] !== right[key]) return false
       }
       return true
-    }
-
-    /** Parse a numeric input; empty is null, invalid is NaN. */
-    function parseNumberInput(text) {
-      const trimmed = String(text).trim()
-      if (trimmed === '') return null
-      const value = Number(trimmed)
-      return Number.isFinite(value) ? value : Number.NaN
-    }
-
-    /** Parse an integer input; empty is null, invalid is NaN. */
-    function parseIntegerInput(text) {
-      const value = parseNumberInput(text)
-      return value === null ? null : Number.isInteger(value) ? value : Number.NaN
     }
 
     /**
@@ -187,69 +186,52 @@ window.__ModuleLoader__.load({
      */
     function validateDraft(draft) {
       const errors = []
-      if (!MODES.includes(draft.mode)) {
-        errors.push({ field: 'mode', message: '请选择一种压缩模式。' })
-      }
-
-      const thresholdRatio = parseNumberInput(draft.thresholdRatio)
-      const thresholdValid =
-        thresholdRatio !== null &&
-        !Number.isNaN(thresholdRatio) &&
-        thresholdRatio > 0 &&
-        thresholdRatio < 1
-      if (!thresholdValid) {
-        errors.push({ field: 'thresholdRatio', message: '自动压缩阈值（thresholdRatio）必须大于 0 且小于 1。' })
-      }
-
-      const headroom = parseIntegerInput(draft.headroomTokens)
-      const headroomValid = headroom !== null && !Number.isNaN(headroom) && headroom >= 0
-      if (!headroomValid) {
-        errors.push({ field: 'headroomTokens', message: '额外预留（headroomTokens）必须为非负整数。' })
-      }
-
+      const add = (field, message) => errors.push({ field, message })
+      if (!MODES.includes(draft.mode)) add('mode', '请选择压缩策略。')
+      const validRatio = (value) => value !== '' && Number.isFinite(Number(value)) && Number(value) > 0 && Number(value) < 1
+      const validInt = (value, min = 0) => value !== '' && Number.isSafeInteger(Number(value)) && Number(value) >= min
+      if (!validRatio(draft.thresholdRatio)) add('thresholdRatio', '触发比例须大于 0% 且小于 100%。')
+      if (!validInt(draft.headroomTokens)) add('headroomTokens', '额外余量须为非负安全整数。')
+      const retainRatio = draft.retainRatio === '' ? DEFAULT_RETAIN_RATIO : Number(draft.retainRatio)
       if (draft.retainMode === 'tokens') {
-        const retainTokens = parseIntegerInput(draft.retainTokens)
-        if (retainTokens === null || Number.isNaN(retainTokens) || retainTokens < 0) {
-          errors.push({ field: 'retainTokens', message: '保留 token 数必须为非负整数。' })
+        if (!validInt(draft.retainTokens)) add('retainTokens', '保留量须为非负安全整数。')
+      } else if (!validRatio(String(retainRatio)) || retainRatio >= Number(draft.thresholdRatio)) {
+        add('retainRatio', '保留比例须大于 0，且低于触发比例；留空使用 16%。')
+      }
+      if ((draft.provider === '') !== (draft.model === '')) add('summarizationModel', '服务商与摘要模型须成对填写。')
+      if (draft.effort !== '' && draft.effort.trim() === '') add('reasoningEffort', '思考强度不能仅包含空格。')
+      if (draft.maxTokens !== '' ? !validInt(draft.maxTokens, 1) : Number(draft.headroomTokens) === 0) {
+        add('maxTokens', '摘要输出上限须为正安全整数；额外余量为 0 时须单独设置。')
+      }
+      for (const key of ['compactionRetries', 'maxOverflowRetries']) {
+        if (!validInt(draft[key])) add(key, '重试次数须为非负安全整数。')
+      }
+      const seen = new Set()
+      draft.policies.forEach((policy, index) => {
+        const prefix = 'policies.' + index + '.'
+        const identity = JSON.stringify([policy.provider, policy.model])
+        if (!policy.provider || !policy.model) add(prefix + 'model', '请填写完整的服务商与模型。')
+        else if (seen.has(identity)) add(prefix + 'model', '该模型已有覆盖规则。')
+        seen.add(identity)
+        for (const [key, label, ratio] of POLICY_NUMBERS) {
+          if (policy[key] !== '' && !(ratio ? validRatio(policy[key]) : validInt(policy[key], key === 'maxTokens' ? 1 : 0))) {
+            add(prefix + key, label + (ratio ? '须大于 0% 且小于 100%。' : '须为' + (key === 'maxTokens' ? '正' : '非负') + '安全整数。'))
+          }
         }
-      } else if (draft.retainRatio !== '') {
-        const retainRatio = parseNumberInput(draft.retainRatio)
-        if (retainRatio === null || Number.isNaN(retainRatio) || retainRatio <= 0 || retainRatio >= 1) {
-          errors.push({ field: 'retainRatio', message: '保留比例必须大于 0 且小于 1。' })
-        } else if (thresholdValid && retainRatio >= thresholdRatio) {
-          errors.push({ field: 'retainRatio', message: '保留比例必须低于自动压缩阈值。' })
+        const threshold = Number(policy.thresholdRatio || draft.thresholdRatio)
+        const ratio = policy.retainMode === 'ratio' ? Number(policy.retainRatio) : retainRatio
+        if (policy.retainMode === 'tokens') {
+          if (!validInt(policy.retainTokens)) add(prefix + 'retainTokens', '保留量须为非负安全整数。')
+        } else if (policy.retainMode === 'ratio' || draft.retainMode === 'ratio') {
+          if (!(ratio > 0 && ratio < threshold)) add(prefix + 'retainRatio', '有效保留比例须大于 0，且低于该规则的触发比例。')
         }
-      }
-
-      if ((draft.provider === '') !== (draft.model === '')) {
-        errors.push({
-          field: 'summarizationModel',
-          message: '摘要 provider / model 必须成对填写，或同时留空以跟随会话。',
-        })
-      }
-
-      if (draft.maxTokens === '') {
-        if (headroom === 0) {
-          errors.push({
-            field: 'maxTokens',
-            message: 'headroomTokens 为 0 时必须填写 maxTokens：原生引擎需要正数摘要输出上限。',
-          })
+        if (policy.summaryMode === 'custom' && (!policy.summarizationProvider || !policy.summarizationModel)) {
+          add(prefix + 'summarizationModel', '请填写完整的摘要服务商与模型。')
         }
-      } else {
-        const maxTokens = parseIntegerInput(draft.maxTokens)
-        if (maxTokens === null || Number.isNaN(maxTokens) || maxTokens <= 0) {
-          errors.push({ field: 'maxTokens', message: '摘要输出上限（maxTokens）必须为正整数。' })
+        if (policy.maxTokens === '' && draft.maxTokens === '' && Number(policy.headroomTokens || draft.headroomTokens) === 0) {
+          add(prefix + 'maxTokens', '余量为 0 时须设置摘要输出上限。')
         }
-      }
-
-      const compactionRetries = parseIntegerInput(draft.compactionRetries)
-      if (compactionRetries === null || Number.isNaN(compactionRetries) || compactionRetries < 0) {
-        errors.push({ field: 'compactionRetries', message: '压力残留重试（compactionRetries）必须为非负整数。' })
-      }
-      const maxOverflowRetries = parseIntegerInput(draft.maxOverflowRetries)
-      if (maxOverflowRetries === null || Number.isNaN(maxOverflowRetries) || maxOverflowRetries < 0) {
-        errors.push({ field: 'maxOverflowRetries', message: '超限恢复次数（maxOverflowRetries）必须为非负整数。' })
-      }
+      })
       return errors
     }
 
@@ -260,21 +242,23 @@ window.__ModuleLoader__.load({
      * never silently deleted and never a blocked save. Native mode does not
      * apply enhanced effort at all.
      */
-    function validateModelSelection(draft, routes, routesKnown) {
-      if (draft.mode === 'native' || draft.provider === '' || draft.model === '' || !routesKnown) return []
-      const route = routes.find((entry) => entry.provider === draft.provider && entry.model === draft.model)
-      if (route === undefined) return []
-      if (draft.effort !== '' && route.efforts.length > 0 && !route.efforts.includes(draft.effort)) {
-        return [
-          {
-            field: 'reasoningEffort',
-            message:
-              `模型 ${draft.provider}/${draft.model} 未声明支持思考强度 "${draft.effort}"。` +
-              '请选择支持的强度，或明确清空以使用摘要模型默认值。',
-          },
-        ]
+    function validateModelSelection(draft, routes, routesKnown, target) {
+      if (draft.mode === 'native' || draft.effort === '' || !routesKnown) return []
+      const candidates = []
+      if (draft.provider && draft.model) candidates.push({ provider: draft.provider, model: draft.model, field: 'reasoningEffort', label: '全局摘要模型' })
+      draft.policies.forEach((policy, index) => {
+        const provider = policy.summaryMode === 'custom' ? policy.summarizationProvider : policy.summaryMode === 'session' || !draft.provider ? policy.provider : draft.provider
+        const model = policy.summaryMode === 'custom' ? policy.summarizationModel : policy.summaryMode === 'session' || !draft.model ? policy.model : draft.model
+        candidates.push({ provider, model, field: 'policies.' + index + '.summarizationModel', label: '规则 ' + policy.provider + '/' + policy.model })
+      })
+      if (!draft.provider && target && !draft.policies.some((policy) => policy.provider === target.provider && policy.model === target.model)) {
+        candidates.push({ ...target, field: 'reasoningEffort', label: '跟随会话的摘要模型' })
       }
-      return []
+      return candidates.flatMap((candidate) => {
+        const route = routes.find((entry) => entry.provider === candidate.provider && entry.model === candidate.model)
+        return route && !route.efforts.includes(draft.effort) ? [{ field: candidate.field,
+          message: candidate.label + ' ' + candidate.provider + '/' + candidate.model + ' 未声明支持强度「' + draft.effort + '」，请调整全局思考强度或摘要模型。' }] : []
+      })
     }
 
     /** Non-blocking marker for a saved route outside the candidate metadata. */
@@ -282,9 +266,7 @@ window.__ModuleLoader__.load({
       if (draft.provider === '' || draft.model === '' || !routesKnown) return null
       if (routes.some((entry) => entry.provider === draft.provider && entry.model === draft.model)) return null
       return (
-        `摘要路由 "${draft.provider}/${draft.model}" 不在宿主候选列表中。` +
-        '当前值已保留；候选列表仅为宿主元数据，不是摘要路由的硬限制。' +
-        '请确认当前会话能使用此路由、选择候选，或清空两项以跟随会话。'
+        `自定义模型 ${draft.provider}/${draft.model} 未列于宿主候选中，请确认会话可用。`
       )
     }
 
@@ -295,7 +277,7 @@ window.__ModuleLoader__.load({
 
     /**
      * Build one atomic mutation from the draft. Only fields the page owns are
-     * written; `modelPolicies` is deliberately never touched. Retention writes
+     * written; unchanged model policies are preserved. Retention writes
      * always clear the other form so a hidden ratio/token conflict cannot
      * survive a save.
      */
@@ -336,12 +318,15 @@ window.__ModuleLoader__.load({
       setIfChanged(['cachePriority'], draft.cachePriority, current.cachePriority)
       setIfChanged(['auto'], draft.auto, current.auto)
       if (draft.maxTokens === '') {
-        if (current.maxTokens !== undefined) ops.push({ op: 'unset', path: ['maxTokens'] })
+        if (current.maxTokens !== undefined && current.maxTokens !== null) ops.push({ op: 'unset', path: ['maxTokens'] })
       } else {
         setIfChanged(['maxTokens'], Number(draft.maxTokens), current.maxTokens)
       }
       setIfChanged(['compactionRetries'], Number(draft.compactionRetries), current.compactionRetries)
       setIfChanged(['maxOverflowRetries'], Number(draft.maxOverflowRetries), current.maxOverflowRetries)
+      if (JSON.stringify(draft.policies) !== JSON.stringify(draftFromValue(current).policies)) {
+        ops.push({ op: 'set', path: ['modelPolicies'], value: draft.policies.map(policyValue) })
+      }
       return ops
     }
 
@@ -509,7 +494,7 @@ window.__ModuleLoader__.load({
         h(DiagramNode, { id: 'tail', x: 108, y: 96, width: 70, height: 28, lines: ['原文保留'], tone: 'dsh-bc-node-strong' }),
         h(DiagramEdge, { from: 'summary', to: 'checkpoint', d: 'M50 124 L50 144', marker }),
         h(DiagramEdge, { from: 'tail', to: 'checkpoint', d: 'M143 124 L143 144', marker }),
-        h(DiagramNode, { id: 'checkpoint', x: 2, y: 144, width: 176, height: 24, lines: ['原生 checkpoint'] }),
+        h(DiagramNode, { id: 'checkpoint', x: 2, y: 144, width: 176, height: 24, lines: ['摘要记录'] }),
       )
     }
 
@@ -518,12 +503,12 @@ window.__ModuleLoader__.load({
       return h(StrategySvg, { mode: 'goal', marker,
         label: 'Goal 增强：较早历史与只读权威 Goal / Todo 合流，生成目标、约束、进展、下一步摘要；近期原文保留，不修改目标或轮次。' },
         h(DiagramNode, { id: 'history', x: 2, y: 38, width: 76, height: 36, lines: ['较早历史'] }),
-        h(DiagramNode, { id: 'authority', x: 88, y: 38, width: 90, height: 36, lines: ['Goal / Todo', '权威状态·只读'], tone: 'dsh-bc-node-dashed' }),
+        h(DiagramNode, { id: 'authority', x: 88, y: 38, width: 90, height: 36, lines: ['目标与任务', '权威状态'], tone: 'dsh-bc-node-dashed' }),
         h(DiagramEdge, { from: 'history', to: 'summary', d: 'M40 74 L40 88 L54 88 L54 102', marker }),
         h(DiagramEdge, { from: 'authority', to: 'summary', d: 'M133 74 L133 88 L54 88 L54 102', marker }),
         h(DiagramNode, { id: 'summary', x: 2, y: 102, width: 104, height: 40, lines: ['目标·约束', '进展·下一步'], tone: 'dsh-bc-node-accent' }),
         h(DiagramNode, { id: 'tail', x: 116, y: 102, width: 62, height: 40, lines: ['近期原文', '保留'], tone: 'dsh-bc-node-strong' }),
-        h('text', { x: 90, y: 164, textAnchor: 'middle' }, '写入原生记录 · 不接管目标'),
+        h('text', { x: 90, y: 164, textAnchor: 'middle' }, '写入会话摘要记录'),
       )
     }
 
@@ -538,7 +523,7 @@ window.__ModuleLoader__.load({
         h(DiagramNode, { id: 'summary', x: 2, y: 100, width: 104, height: 36, lines: ['原生事件', '保存交接正文'], tone: 'dsh-bc-node-accent' }),
         h(DiagramNode, { id: 'tail', x: 116, y: 100, width: 62, height: 36, lines: ['近期原文', '保留'], tone: 'dsh-bc-node-strong' }),
         h(DiagramEdge, { from: 'summary', to: 'continuation', d: 'M54 136 L54 146', marker }),
-        h(DiagramNode, { id: 'continuation', x: 2, y: 146, width: 176, height: 22, lines: ['同会话继续 · 不新建会话'] }),
+        h(DiagramNode, { id: 'continuation', x: 2, y: 146, width: 176, height: 22, lines: ['同会话继续'] }),
       )
     }
 
@@ -548,18 +533,33 @@ window.__ModuleLoader__.load({
 
     /** A labelled field; children is a render function receiving the input id. */
     function Field(props) {
-      const rawId = useId()
-      const id = `dsh-bc-${props.name}-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`
-      return h(
-        'div',
-        { className: 'dsh-bc-field' },
+      const id = 'dsh-bc-' + props.name + '-' + useId().replace(/[^a-zA-Z0-9_-]/g, '')
+      return h('div', { className: 'dsh-bc-field' },
         h('label', { htmlFor: id, className: 'dsh-bc-label' }, props.label),
-        props.children(id),
-        props.help === undefined || props.help === null ? null : h('p', { className: 'dsh-bc-help' }, props.help),
-        props.error === undefined || props.error === null
-          ? null
-          : h('p', { className: 'dsh-bc-error', role: 'alert', 'data-bc-error': props.name }, props.error),
-      )
+        props.children(id, { 'aria-invalid': props.error ? true : undefined, 'aria-describedby': props.error ? id + '-error' : props.help ? id + '-help' : undefined }),
+        props.help ? h('p', { id: id + '-help', className: 'dsh-bc-help' }, props.help) : null,
+        props.error ? h('p', { id: id + '-error', className: 'dsh-bc-error', role: 'alert', 'data-bc-error': props.name }, props.error) : null)
+    }
+
+    function NumberField(props) {
+      const ratio = props.ratio === true
+      const display = ratio && props.value !== '' ? String(Number((Number(props.value) * 100).toFixed(8))) : props.value
+      return h(Field, { ...props, children: (id, aria) => h('div', { className: 'dsh-bc-number' },
+        h('input', { ...aria, id, name: props.name, className: 'dsh-bc-input dsh-bc-mono', type: 'number',
+          inputMode: ratio ? 'decimal' : 'numeric', min: props.min ?? 0, max: ratio ? 100 : undefined,
+          step: ratio ? 'any' : 1, value: display, disabled: props.disabled, placeholder: props.placeholder,
+          onChange: (event) => props.onChange(event.target.value === '' ? '' : ratio ? String(Number(event.target.value) / 100) : event.target.value) }),
+        h('span', { className: 'dsh-bc-unit', 'aria-hidden': true }, ratio ? '%' : props.unit ?? 'tokens')) })
+    }
+
+    function Explain(props) {
+      return h('details', { className: 'dsh-bc-explanation', open: props.open, 'data-bc': props.name },
+        h('summary', null, props.title), h('div', { className: 'dsh-bc-explanation-body' }, props.children))
+    }
+
+    function Metric(props) {
+      return h('div', { className: 'dsh-bc-metric' + (props.primary ? ' dsh-bc-metric-primary' : '') }, h('span', { className: 'dsh-bc-caption' }, props.label),
+        h('span', { className: 'dsh-bc-metric-value dsh-bc-mono', 'data-bc': props.name }, props.value))
     }
 
     /** A section surface with a heading. */
@@ -637,22 +637,13 @@ window.__ModuleLoader__.load({
         h(
           'div',
           { className: 'dsh-bc-mode-head' },
-          h('span', { className: 'dsh-bc-radio-dot', 'aria-hidden': 'true' }),
+          h('span', { className: 'dsh-bc-mode-indicator', 'aria-hidden': 'true' }),
           h('span', { className: 'dsh-bc-mode-title' }, meta.label),
-          meta.badge === undefined || meta.badge === null ? null : h('span', { className: 'dsh-bc-tag' }, meta.badge),
-          props.selected
-            ? h('span', { className: 'dsh-bc-selected-tag', 'data-bc-selected-tag': 'true' }, '已选')
-            : null,
+
         ),
         h('p', { className: 'dsh-bc-mode-description' }, meta.description),
         h('div', { className: 'dsh-bc-diagram-wrap' }, h(Diagram)),
-        props.pending
-          ? h(
-              'p',
-              { className: 'dsh-bc-mode-pending', 'data-bc-mode-pending': 'true' },
-              '与运行模式不同；保存后重载 profile 生效。',
-            )
-          : null,
+
       )
     }
 
@@ -681,7 +672,8 @@ window.__ModuleLoader__.load({
       }
       return h(
         'div',
-        null,
+        { className: 'dsh-bc-strategies' },
+        h('h3', { className: 'dsh-bc-h3' }, '压缩策略'),
         h(
           'div',
           { className: 'dsh-bc-modes', role: 'radiogroup', 'aria-label': '压缩模式', 'data-bc': 'mode-cards' },
@@ -691,11 +683,6 @@ window.__ModuleLoader__.load({
               mode,
               selected: props.value === mode,
               disabled: props.disabled,
-              pending:
-                props.activeMode !== null &&
-                props.activeMode !== undefined &&
-                props.value === mode &&
-                props.activeMode !== mode,
               onSelect: choose,
               onMove: move,
               onMoveTo: (index) => choose(MODES[index]),
@@ -706,8 +693,8 @@ window.__ModuleLoader__.load({
           ),
         ),
         h('div', { className: 'dsh-bc-strategy-foot' },
-          h('p', { className: 'dsh-bc-caption', 'data-bc': 'strategy-note' }, STRATEGY_NOTE),
-          h('details', { className: 'dsh-bc-explanation' }, h('summary', null, '模式说明'),
+
+          h('details', { className: 'dsh-bc-explanation', 'data-bc': 'mode-details' }, h('summary', null, '模式说明'),
             MODES.map((mode) => h('p', { key: mode, className: 'dsh-bc-caption' }, MODE_META[mode].label + '：' + MODE_META[mode].caption))),
         ),
       )
@@ -745,13 +732,13 @@ window.__ModuleLoader__.load({
       if (/leaving no message budget/i.test(text)) {
         return {
           label: '模型容量不足',
-          hint: '请调整摘要模型 / 上下文容量，或降低 maxTokens。',
+          hint: '请降低主会话的输出预留，或选择更大窗口的会话模型。',
         }
       }
       if (/leaving no pressure budget/i.test(text)) {
         return {
           label: '额外预留与输出预留占满窗口',
-          hint: '请降低 headroomTokens / maxTokens，或选择更大窗口的模型。',
+          hint: '请降低额外余量或主会话的输出预留，或选择更大窗口的会话模型。',
         }
       }
       if (/must be less than threshold tokens/i.test(text)) {
@@ -769,12 +756,12 @@ window.__ModuleLoader__.load({
       if (/no routed request/i.test(text)) {
         return {
           label: '尚无模型路由请求',
-          hint: '请先在会话中发送请求，或显式配置摘要 provider / model。',
+          hint: '请先在会话中发送一次模型请求。',
         }
       }
       if (/no context capacity/i.test(text) || /model metadata is unavailable/i.test(text)) {
         return {
-          label: '模型容量未知（unknown）',
+          label: '模型容量未知',
           hint: '请检查该路由模型的适配器元数据。',
         }
       }
@@ -782,7 +769,7 @@ window.__ModuleLoader__.load({
         return { label: '尚未到达自动触发线（提示）', hint: null }
       }
       if (/automatic compaction is disabled/i.test(text)) {
-        return { label: '自动压缩已关闭（提示）', hint: '可在高级选项中开启自动压缩。' }
+        return { label: '自动压缩已关闭（提示）', hint: '可在上下文预算中开启自动压缩。' }
       }
       return null
     }
@@ -816,64 +803,18 @@ window.__ModuleLoader__.load({
 
     /** One proportional bar with a trigger marker and an optional reserve zone. */
     function TokenBar(props) {
-      const scale = props.scale
-      const segments = (props.segments ?? []).filter(
-        (segment) => typeof segment.tokens === 'number' && Number.isFinite(segment.tokens) && segment.tokens > 0,
-      )
-      const triggerLeft = percentOf(props.triggerTokens, scale)
-      const currentLeft = percentOf(props.currentTokens, scale)
-      const reserveLeft = percentOf(props.triggerTokens, scale)
-      const reserveWidth =
-        typeof props.windowTokens === 'number' && Number.isFinite(props.windowTokens) && reserveLeft !== null
-          ? Math.max(0, percentOf(props.windowTokens, scale) - reserveLeft)
-          : null
-      if (typeof scale !== 'number' || !Number.isFinite(scale) || scale <= 0) {
-        return h('p', { className: 'dsh-bc-unknown' }, 'unknown — not enough values to draw a distribution')
-      }
-      return h(
-        'div',
-        {
-          className: 'dsh-bc-bar',
-          role: 'img',
-          'aria-label': props.ariaLabel,
-          'data-bc': props.name,
-          title: props.ariaLabel,
-        },
-        h(
-          'div',
-          { className: 'dsh-bc-bar-track' },
-          segments.map((segment) =>
-            h('div', {
-              key: segment.key,
-              className: `dsh-bc-bar-seg dsh-bc-seg-${segment.tone ?? 'free'}`,
-              style: { width: `${percentOf(segment.tokens, scale)}%` },
-            }),
-          ),
-        ),
-        reserveWidth !== null && reserveWidth > 0 && reserveLeft !== null
-          ? h('div', {
-              className: 'dsh-bc-reserve-zone',
-              style: { left: `${reserveLeft}%`, width: `${reserveWidth}%` },
-              'aria-hidden': 'true',
-            })
-          : null,
-        triggerLeft !== null
-          ? h('div', {
-              className: 'dsh-bc-trigger',
-              style: { left: `${triggerLeft}%` },
-              'aria-hidden': 'true',
-              'data-bc-trigger': 'true',
-            })
-          : null,
-        currentLeft !== null
-          ? h('div', {
-              className: 'dsh-bc-current-line',
-              style: { left: `${currentLeft}%` },
-              'aria-hidden': 'true',
-              'data-bc-current': 'true',
-            })
-          : null,
-      )
+      if (!(props.scale > 0)) return null
+      const markers = [['trigger', props.triggerTokens], ['current', props.currentTokens]]
+      return h('div', { className: 'dsh-bc-bar-wrap' },
+        h('div', { className: 'dsh-bc-bar', role: 'img', 'aria-label': props.ariaLabel, 'data-bc': props.name },
+        h('div', { className: 'dsh-bc-bar-track' }, (props.segments ?? []).filter((segment) => segment.tokens > 0).map((segment) =>
+          h('div', { key: segment.key, className: 'dsh-bc-bar-seg dsh-bc-seg-' + (segment.tone ?? 'free'),
+            title: segment.label + ' · ' + tokensText(segment.tokens), style: { width: percentOf(segment.tokens, props.scale) + '%' } }))),
+        markers.map(([name, value]) => typeof value === 'number' && Number.isFinite(value) ? h('div', {
+          key: name, className: name === 'trigger' ? 'dsh-bc-trigger' : 'dsh-bc-current-line',
+          style: { left: percentOf(value, props.scale) + '%' }, 'aria-hidden': true }) : null)),
+        props.ticks ? h('div', { className: 'dsh-bc-bar-ticks', 'aria-hidden': true },
+          [0, 0.25, 0.5, 0.75, 1].map((ratio) => h('span', { key: ratio }, ratio === 0 ? '0' : groupDigits(Math.round(props.scale * ratio))))) : null)
     }
 
     /** Legend for one bar. */
@@ -891,710 +832,242 @@ window.__ModuleLoader__.load({
               null,
               typeof item.tokens === 'number'
                 ? `${item.label}: ${tokensText(item.tokens)}`
-                : `${item.label} (not separately reported)`,
+                : `${item.label}：未知`,
             ),
           ),
         ),
       )
     }
 
-    /** Build the value segments for the budget composition. */
-    function budgetSegments(budget) {
-      if (budget === null || budget === undefined) return null
-      const windowTokens = budget.contextWindow
-      const current = budget.currentTokens
-      const fixed = budget.fixedTokens
-      const retain = budget.retainTokens
-      const summary = budget.summaryMaxTokens
-      if (
-        typeof windowTokens !== 'number' ||
-        typeof current !== 'number' ||
-        typeof fixed !== 'number' ||
-        typeof retain !== 'number' ||
-        typeof summary !== 'number'
-      ) {
-        return null
-      }
-      const earlier = Math.max(0, current - fixed - retain)
-      return {
-        windowTokens,
-        current,
-        fixed,
-        retain,
-        summary,
-        earlier,
-        scale: Math.max(windowTokens, current, fixed + retain + summary, 1),
-      }
+    /** Configuration arithmetic only. Counts and safe cuts remain server-owned. */
+    function projectDraftBudget(draft, budget) {
+      if (!budget?.target || !Number.isFinite(budget.contextWindow) || !Number.isFinite(budget.reservedCompletionTokens)) return null
+      const policy = draft.policies.find((entry) => entry.provider === budget.target.provider && entry.model === budget.target.model)
+      const chosen = (key) => policy && policy[key] !== '' ? Number(policy[key]) : Number(draft[key])
+      const window = budget.contextWindow
+      const reserved = budget.reservedCompletionTokens
+      const message = window - reserved
+      const headroom = chosen('headroomTokens')
+      const ratio = chosen('thresholdRatio')
+      const pressure = message - headroom
+      const threshold = Math.floor(Math.min(window * ratio, pressure))
+      const retainMode = policy && policy.retainMode !== 'inherit' ? policy.retainMode : draft.retainMode
+      const retainSource = policy && policy.retainMode !== 'inherit' ? policy : draft
+      const retain = retainMode === 'tokens' ? Number(retainSource.retainTokens) : Math.floor(message * (retainSource.retainRatio === '' ? DEFAULT_RETAIN_RATIO : Number(retainSource.retainRatio)))
+      const summary = policy?.maxTokens !== undefined && policy.maxTokens !== '' ? Number(policy.maxTokens)
+        : draft.maxTokens !== '' ? Number(draft.maxTokens) : headroom
+      if (![window, reserved, message, headroom, ratio, threshold, retain, summary].every(Number.isFinite)) return null
+      let error = null
+      if (message <= 0) error = '会话输出预留已占满窗口，请调整会话模型的输出上限。'
+      else if (pressure <= 0) error = '额外余量须小于消息预算 ' + tokensText(message) + '。'
+      else if (retain >= threshold) error = '有效保留量 ' + tokensText(retain) + ' 须小于触发点 ' + tokensText(threshold) + '。'
+      return { window, reserved, message, headroom, pressure, ratio, threshold, retain, summary, policy, error }
     }
-
-    // ── budget / retention section ────────────────────────────────────────
 
     function BudgetSection(props) {
-      const { draft, activeConfig, budget, preview, reasons, engineApplies, sessionId, inspectLoading, inspectError, sessionControl } = props
-      const disabled = props.disabled
-      const thresholdRatio =
-        draft.thresholdRatio !== ''
-          ? draft.thresholdRatio
-          : activeConfig !== null && typeof activeConfig.thresholdRatio === 'number'
-            ? String(activeConfig.thresholdRatio)
-            : 'unknown'
-      const segments = engineApplies === false ? null : budgetSegments(budget)
-      const previewStart = preview !== null && preview !== undefined ? preview.rangeStart : null
-      const previewEnd = preview !== null && preview !== undefined ? preview.rangeEnd : null
-      const hasSafeCut = typeof previewStart === 'number' && typeof previewEnd === 'number'
-      const windowText = valueOrUnknown(budget?.contextWindow, tokensText)
-      const currentText = valueOrUnknown(budget?.currentTokens, tokensText)
-      const fixedText = valueOrUnknown(budget?.fixedTokens, tokensText)
-      const thresholdText = valueOrUnknown(budget?.thresholdTokens, tokensText)
-      const retainText = valueOrUnknown(budget?.retainTokens, tokensText)
-      const summaryText = valueOrUnknown(budget?.summaryMaxTokens, tokensText)
-      const measurement =
-        budget === null || budget === undefined
-          ? 'unknown'
-          : budget.measurement === 'measured'
-            ? 'measured (provider usage anchor)'
-            : budget.measurement === 'estimated'
-              ? 'estimated (fixed heuristic)'
-              : 'unavailable'
-      const emptySession = sessionId === ''
-
-      return h(
-        Section,
-        { name: 'budget', title: '上下文预算与保留范围', aside: sessionControl },
-        h(
-          'div',
-          { className: 'dsh-bc-budget-facts' },
-          h(Row, { label: '模型窗口', value: windowText }),
-          h(Row, { label: '当前上下文', value: currentText, help: `Measurement: ${measurement}` }),
-          h(Row, { label: '固定提示 / 工具前缀', value: fixedText }),
-          h(Row, { label: '配置阈值比例（草稿）', value: thresholdRatio }),
-          h(Row, { label: '运行触发线', value: thresholdText }),
-          h(Row, { label: '运行保留预算', value: retainText }),
-          h(Row, { label: '摘要输出上限（maxTokens）', value: summaryText }),
-        ),
-        h(
-          'p',
-          { className: 'dsh-bc-caption' },
-          '触发线 = min(窗口 × 阈值比例, 窗口 − 输出预留 − headroom)。诊断未单独提供输出预留与 headroom 的分项，运行触发线已计入两者。',
-        ),
-        h(Field, {
-          name: 'thresholdRatio',
-          label: '自动压缩阈值（thresholdRatio）',
-          help: '填写 0～1 之间的比例；运行触发线还受输出预留与 headroom 约束。',
-          error: props.fieldError('thresholdRatio'),
-          children: (id) =>
-            h('input', {
-              id,
-              name: 'thresholdRatio',
-              className: 'dsh-bc-input dsh-bc-mono',
-              type: 'text',
-              inputMode: 'decimal',
-              value: draft.thresholdRatio,
-              disabled,
-              onChange: (event) => props.onDraft({ thresholdRatio: event.target.value }),
-            }),
-        }),
-        engineApplies === false
-          ? h(
-              'p',
-              { className: 'dsh-bc-note', 'data-bc': 'budget-not-applicable' },
-              '此会话使用其他压缩引擎，不绘制预算与预览。以下配置仍适用于使用本插件的会话。',
-            )
-          : inspectError !== null && inspectError !== undefined
-            ? h('p', { className: 'dsh-bc-error', role: 'alert' }, `只读诊断失败：${inspectError}。预算未知（unknown），表单仍可编辑。`)
-            : emptySession
-              ? h('p', { className: 'dsh-bc-unknown', 'data-bc': 'budget-empty' }, '请选择会话以读取预算与安全切点；当前仅显示插件状态，数值 unknown。')
-              : inspectLoading
-                ? h('p', { className: 'dsh-bc-note', role: 'status' }, '正在读取会话预算…')
-                : segments === null
-                  ? h(
-                      'p',
-                      { className: 'dsh-bc-unknown', 'data-bc': 'budget-incomplete' },
-                      '预算数据不完整或不可用（unknown），不绘制虚构分布。',
-                    )
-                  : h(
-                      'div',
-                      { className: 'dsh-bc-bar-block' },
-                      h(TokenBar, {
-                        name: 'budget-window-bar',
-                        scale: segments.scale,
-                        windowTokens: segments.windowTokens,
-                        triggerTokens: budget.thresholdTokens,
-                        currentTokens: segments.current,
-                        ariaLabel:
-                          `Context budget: window ${tokensText(segments.windowTokens)}; current ${tokensText(segments.current)}; ` +
-                          `fixed prefix ${tokensText(segments.fixed)}; earlier history ${tokensText(segments.earlier)}; ` +
-                          `retained tail ${tokensText(segments.retain)}; effective trigger ${tokensText(budget.thresholdTokens)}. ` +
-                          'The zone from the trigger to the window end is output reserve plus headroom.',
-                        segments: [
-                          { key: 'fixed', label: '固定前缀', tokens: segments.fixed, tone: 'fixed' },
-                          { key: 'history', label: '较早历史（可压缩）', tokens: segments.earlier, tone: 'history' },
-                          { key: 'tail', label: '近期保留原文', tokens: segments.retain, tone: 'tail' },
-                          { key: 'free', label: '未用窗口', tokens: Math.max(0, segments.windowTokens - segments.current), tone: 'free' },
-                        ],
-                      }),
-                      h(TokenLegend, {
-                        name: 'budget-legend',
-                        items: [
-                          { key: 'fixed', label: '固定前缀', tokens: segments.fixed, tone: 'fixed' },
-                          { key: 'history', label: '较早历史', tokens: segments.earlier, tone: 'history' },
-                          { key: 'tail', label: '近期保留原文', tokens: segments.retain, tone: 'tail' },
-                          { key: 'reserve', label: '输出 / 额外预留区（触发线 → 窗口末端）', tokens: null, tone: 'reserve' },
-                        ],
-                      }),
-                      h(
-                        'p',
-                        { className: 'dsh-bc-caption' },
-                        `触发线：${tokensText(budget.thresholdTokens)}；当前：${tokensText(segments.current)}。触发线后的区域为输出与额外预留，不是可自由压缩空间。`,
-                      ),
-                    ),
-        h(
-          'div',
-          { className: 'dsh-bc-retention' },
-          h('h4', { className: 'dsh-bc-h4' }, '近期原文保留范围'),
-          h(
-            'div',
-            { className: 'dsh-bc-retention-forms', role: 'radiogroup', 'aria-label': 'Retention budget form' },
-            h(
-              'label',
-              { className: 'dsh-bc-retention-option' },
-              h('input', {
-                type: 'radio',
-                name: 'retainMode',
-                value: 'ratio',
-                checked: draft.retainMode === 'ratio',
-                disabled,
-                onChange: () => props.onRetentionMode('ratio'),
-              }),
-              h('span', null, '按可用窗口比例'),
-            ),
-            h(
-              'label',
-              { className: 'dsh-bc-retention-option' },
-              h('input', {
-                type: 'radio',
-                name: 'retainMode',
-                value: 'tokens',
-                checked: draft.retainMode === 'tokens',
-                disabled,
-                onChange: () => props.onRetentionMode('tokens'),
-              }),
-              h('span', null, '按 token 数'),
-            ),
-          ),
-          draft.retainMode === 'ratio'
-            ? h(Field, {
-                name: 'retainRatio',
-                label: '保留比例（retainRatio）',
-                help:
-                  h('span', { 'data-bc': 'retention-source' }, draft.retainRatio !== ''
-                    ? `${draft.retainRatio === String(props.stateValue?.retainRatio) ? '已保存（宿主表单）' : '草稿'}：${ratioText(Number(draft.retainRatio))}；保存将清除 retainTokens。`
-                    : activeConfig !== null && typeof activeConfig.retainRatio === 'number'
-                      ? `留空继承。当前运行值 ${ratioText(activeConfig.retainRatio)}（来源 activeConfig）；重载后按新配置重新解析，不保证仍是此值。`
-                      : '留空继承；当前有效默认值 unknown（诊断未返回 activeConfig），不填入演示值。'),
-                error: props.fieldError('retainRatio'),
-                children: (id) =>
-                  h('input', {
-                    id,
-                    name: 'retainRatio',
-                    className: 'dsh-bc-input dsh-bc-mono',
-                    type: 'text',
-                    inputMode: 'decimal',
-                    value: draft.retainRatio,
-                    placeholder:
-                      activeConfig !== null && typeof activeConfig.retainRatio === 'number'
-                        ? String(activeConfig.retainRatio)
-                        : '继承引擎默认值',
-                    disabled,
-                    onChange: (event) => props.onDraft({ retainRatio: event.target.value }),
-                  }),
-              })
-            : h(Field, {
-                name: 'retainTokens',
-                label: '保留 token 数（retainTokens）',
-                help: '近期原文的绝对 token 预算；保存将清除 retainRatio。',
-                error: props.fieldError('retainTokens'),
-                children: (id) =>
-                  h('input', {
-                    id,
-                    name: 'retainTokens',
-                    className: 'dsh-bc-input dsh-bc-mono',
-                    type: 'text',
-                    inputMode: 'numeric',
-                    value: draft.retainTokens,
-                    disabled,
-                    onChange: (event) => props.onDraft({ retainTokens: event.target.value }),
-                  }),
-              }),
-          h(
-            'ul',
-            { className: 'dsh-bc-bullets', 'data-bc': 'retention-compare' },
-            h(
-              'li',
-              null,
-              h('strong', null, '自动压力压缩：'),
-              `按运行保留预算（${retainText}）保留近期原文，并按原生工具配对边界对齐。`,
-            ),
-            h(
-              'li',
-              null,
-              h('strong', null, '手动压缩 / 上下文超限恢复：'),
-              '使用更激进的安全区间（原生手动 / overflow 使用 retainTokens = 0），可能少于配置保留量。',
-            ),
-            h('li', null, '近期保留是预算，不是永久 pin；实际安全切点可不同于预算，但仍保持工具调用 / 结果配对。'),
-          ),
-        ),
-        h(
-          'div',
-          { className: 'dsh-bc-preview' },
-          h('h4', { className: 'dsh-bc-h4' }, '只读安全切点与组成'),
-          engineApplies === false
-            ? h('p', { className: 'dsh-bc-note' }, '该会话使用其他压缩引擎，不绘制预览。')
-            : inspectError !== null && inspectError !== undefined
-              ? h('p', { className: 'dsh-bc-note' }, '诊断失败，预览不可用。')
-              : emptySession
-                ? h('p', { className: 'dsh-bc-unknown' }, '未选择会话，当前无可计算切点。')
-                : preview === null || preview === undefined
-                  ? h('p', { className: 'dsh-bc-unknown' }, '该会话当前无可计算切点。')
-                  : hasSafeCut
-                    ? h(
-                        'p',
-                        { className: 'dsh-bc-strong', 'data-bc': 'safe-cut' },
-                        `安全切点候选：surface seq ${previewStart}–${previewEnd}；压缩前 ${tokensText(preview.beforeTokens)}；` +
-                          `压缩后预算上界估算 ${preview.afterUpperBoundTokens === null ? 'unknown' : `≤ ${tokensText(preview.afterUpperBoundTokens)}`}.`,
-                      )
-                    : h(
-                        'p',
-                        { className: 'dsh-bc-unknown', 'data-bc': 'no-safe-cut' },
-                        `当前无可计算切点。${typeof preview.reason === 'string' && preview.reason.length > 0 ? preview.reason : '原生选区未返回区间。'}`,
-                      ),
-          h(ReasonList, { reasons }),
-          segments !== null
-            ? h(
-                'div',
-                { className: 'dsh-bc-composition' },
-                h('h5', { className: 'dsh-bc-h5' }, '压缩前后组成'),
-                h('p', { className: 'dsh-bc-caption' }, '压缩前：固定前缀 + 较早历史 + 近期原文；压缩后：固定前缀 + 摘要输出预算 + 近期原文。'),
-                h('p', { className: 'dsh-bc-strong', 'data-bc': 'before-label' }, '压缩前（当前上下文）'),
-                h(TokenBar, {
-                  name: 'before-bar',
-                  scale: segments.scale,
-                  ariaLabel: `Before compaction: fixed prefix ${tokensText(segments.fixed)}, earlier history ${tokensText(segments.earlier)}, retained tail ${tokensText(segments.retain)}.`,
-                  segments: [
-                    { key: 'fixed', label: '固定前缀', tokens: segments.fixed, tone: 'fixed' },
-                    { key: 'history', label: '较早历史', tokens: segments.earlier, tone: 'history' },
-                    { key: 'tail', label: '近期原文', tokens: segments.retain, tone: 'tail' },
-                  ],
-                }),
-                h('p', { className: 'dsh-bc-strong', 'data-bc': 'after-label' }, '压缩后（预算上界估算）'),
-                h(TokenBar, {
-                  name: 'after-bar',
-                  scale: segments.scale,
-                  ariaLabel: `After compaction upper bound: fixed prefix ${tokensText(segments.fixed)}, summary output budget ${tokensText(segments.summary)}, retained tail ${tokensText(segments.retain)}.`,
-                  segments: [
-                    { key: 'fixed', label: '固定前缀', tokens: segments.fixed, tone: 'fixed' },
-                    { key: 'summary', label: '摘要输出预算', tokens: segments.summary, tone: 'summary' },
-                    { key: 'tail', label: '近期原文', tokens: segments.retain, tone: 'tail' },
-                  ],
-                }),
-                h(TokenLegend, {
-                  name: 'composition-legend',
-                  items: [
-                    { key: 'fixed', label: '固定前缀', tokens: segments.fixed, tone: 'fixed' },
-                    { key: 'summary', label: '摘要输出预算', tokens: segments.summary, tone: 'summary' },
-                    { key: 'tail', label: '近期原文', tokens: segments.retain, tone: 'tail' },
-                  ],
-                }),
-                h(
-                  'p',
-                  { className: 'dsh-bc-caption' },
-                  'afterUpperBoundTokens 仅为预算上界估算（含摘要输出预算与原生 checkpoint 结构），不是生成摘要长度预测。近期原文按运行保留预算展示，实际安全切点可能不同。',
-                ),
-              )
-            : null,
-        ),
-      )
+      const { draft, budget, disabled } = props
+      const previewAvailable = !props.inspectError && !props.inspectLoading && props.engineApplies !== false && props.sessionId !== ''
+      const preview = previewAvailable ? props.preview : null
+      const projected = props.projection
+      const hasCut = typeof preview?.rangeStart === 'number' && typeof preview?.rangeEnd === 'number'
+      const hasParts = hasCut && [budget?.fixedTokens, preview?.replacedTokens, preview?.retainedTokens, preview?.checkpointFramingTokens, budget?.summaryMaxTokens].every(Number.isFinite)
+      const scale = hasParts ? Math.max(budget.contextWindow ?? 0, budget.currentTokens, preview.afterUpperBoundTokens, 1) : null
+      const field = (name, label, ratio, help) => h(NumberField, { name, label, ratio, value: draft[name], disabled: disabled || name === 'thresholdRatio' && !draft.auto,
+        help, error: props.fieldError(name), onChange: (value) => props.onDraft({ [name]: value }) })
+      return h(Section, { name: 'budget', title: '上下文预算', aside: props.sessionControl },
+        props.engineApplies === false ? h('p', { className: 'dsh-bc-note', 'data-bc': 'budget-not-applicable' }, '此会话使用其他压缩引擎。请选择使用本插件的会话查看预算。')
+          : props.inspectError ? h('p', { className: 'dsh-bc-error', role: 'alert' }, '诊断读取失败：' + props.inspectError)
+          : props.inspectLoading ? h('p', { className: 'dsh-bc-note', role: 'status' }, '读取预算…')
+          : h('div', { className: 'dsh-bc-snapshot', 'data-bc': 'budget-snapshot' },
+            h('div', { className: 'dsh-bc-subhead' }, h('span', { className: 'dsh-bc-caption' }, props.engine?.owner === 'unknown' ? '配置诊断快照' : '运行快照'),
+              budget?.target ? h('span', { className: 'dsh-bc-caption dsh-bc-mono' }, budget.target.provider + '/' + budget.target.model) : null),
+            h('div', { className: 'dsh-bc-metrics' },
+              h(Metric, { label: '模型窗口', value: tokensText(budget?.contextWindow), name: 'context-window' }),
+              h(Metric, { label: '当前上下文', value: tokensText(budget?.currentTokens), name: 'current-tokens', primary: true }),
+              h(Metric, { label: '运行触发点', value: tokensText(budget?.thresholdTokens), name: 'runtime-trigger' })),
+            Number.isFinite(budget?.currentTokens) && budget?.contextWindow > 0 ? h(TokenBar, {
+              name: 'budget-window-bar', scale: Math.max(budget.contextWindow, budget.currentTokens), ticks: true,
+              triggerTokens: budget.thresholdTokens, currentTokens: budget.currentTokens,
+              ariaLabel: '当前上下文 ' + tokensText(budget.currentTokens) + '；运行触发点 ' + tokensText(budget.thresholdTokens) + '；窗口 ' + tokensText(budget.contextWindow),
+              segments: [{ key: 'used', label: '当前上下文', tokens: budget.currentTokens, tone: 'history' }] }) : null,
+            h('div', { className: 'dsh-bc-subhead' },
+              h('div', { className: 'dsh-bc-marker-legend', 'aria-hidden': true }, h('span', null, h('i', { className: 'dsh-bc-key-trigger' }), '运行触发点'), h('span', null, h('i', { className: 'dsh-bc-key-current' }), '当前用量')),
+              h('span', { className: 'dsh-bc-caption' }, budget?.measurement === 'measured' ? '用量基于服务商返回值校准。' : budget?.measurement === 'estimated' ? '用量为估算值。' : '用量尚不可用。'))),
+        h('div', { className: 'dsh-bc-budget-editor', 'data-bc': 'trigger-editor' },
+          h('div', { className: 'dsh-bc-subhead' }, h('h4', { className: 'dsh-bc-h4' }, '触发设置'),
+            h(Toggle, { name: 'auto', label: '自动压缩', checked: draft.auto, disabled, onChange: (auto) => props.onDraft({ auto }) })),
+          h('div', { className: 'dsh-bc-grid dsh-bc-trigger-controls' },
+            h('div', { className: 'dsh-bc-threshold' },
+              field('thresholdRatio', '窗口触发比例', true),
+              h('input', { name: 'thresholdRatioSlider', type: 'range', className: 'dsh-bc-range', min: 0.01, max: 0.99, step: 0.01,
+                'aria-label': '自动压缩触发比例', 'aria-valuetext': draft.thresholdRatio === '' ? '未设置' : ratioText(Number(draft.thresholdRatio)),
+                value: Math.max(0.01, Math.min(0.99, Number(draft.thresholdRatio) || 0.01)), disabled: disabled || !draft.auto,
+                style: { '--bc-range-progress': percentOf(Math.max(0.01, Math.min(0.99, Number(draft.thresholdRatio) || 0.01)) - 0.01, 0.98) + '%' },
+                onChange: (event) => props.onDraft({ thresholdRatio: event.target.value }) }),
+              h('div', { className: 'dsh-bc-range-ticks', 'aria-hidden': true }, h('span', null, '1%'), h('span', null, '50%'), h('span', null, '99%'))),
+            field('headroomTokens', '额外余量', false, '在会话输出预留之外留出的空间')),
+          !draft.auto ? h('p', { className: 'dsh-bc-note' }, '自动压缩已关闭，保留触发配置；仍可手动压缩。') : null,
+          projected ? h('div', { className: 'dsh-bc-draft-allocation', 'data-bc': 'draft-budget' },
+            h('div', { className: 'dsh-bc-subhead' },
+              h(Metric, { label: draft.auto ? '编辑后有效触发点' : '配置触发点', value: tokensText(projected.threshold), name: 'draft-trigger' }),
+              h(Metric, { label: '消息预算', value: tokensText(projected.message), name: 'draft-message-budget' })),
+            projected.error ? h('p', { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'budget-constraint' }, projected.error)
+              : h(TokenBar, { name: 'draft-window-bar', scale: projected.window, triggerTokens: projected.threshold, ticks: true,
+                ariaLabel: '编辑后窗口分配：触发点 ' + tokensText(projected.threshold) + '，额外余量 ' + tokensText(projected.headroom) + '，会话输出预留 ' + tokensText(projected.reserved),
+                segments: [
+                  { key: 'trigger', label: '触发前预算', tokens: projected.threshold, tone: 'history' },
+                  { key: 'slack', label: '比例约束留下的空间', tokens: projected.pressure - projected.threshold, tone: 'free' },
+                  { key: 'headroom', label: '额外余量', tokens: projected.headroom, tone: 'headroom' },
+                  { key: 'output', label: '会话输出预留', tokens: projected.reserved, tone: 'fixed' },
+                ] }),
+            projected.error ? null : h(TokenLegend, { name: 'draft-budget-legend', items: [
+              { key: 'trigger', label: '触发前', tokens: projected.threshold, tone: 'history' },
+              ...(projected.pressure > projected.threshold ? [{ key: 'slack', label: '比例留白', tokens: projected.pressure - projected.threshold, tone: 'free' }] : []),
+              { key: 'headroom', label: '额外余量', tokens: projected.headroom, tone: 'headroom' },
+              { key: 'output', label: '会话输出', tokens: projected.reserved, tone: 'fixed' },
+            ] }),
+            h('p', { className: 'dsh-bc-caption' }, (projected.window * projected.ratio <= projected.pressure ? '由窗口比例限制' : '由输出预留与余量限制') + (projected.policy ? ' · 已合并该模型覆盖规则' : '') + ' · 保存并重载后应用。'))
+            : props.engineApplies === false || props.inspectError || props.inspectLoading || props.draftValid === false ? null
+              : h('p', { className: 'dsh-bc-caption', 'data-bc': 'budget-incomplete' }, props.sessionId === '' ? '选择会话以查看编辑后的预算。' : '诊断预算分项尚不可用，暂无法计算编辑后的预算。')),
+        h('div', { className: 'dsh-bc-retention' },
+          h('h4', { className: 'dsh-bc-h4' }, '近期原文保留'),
+          h('div', { className: 'dsh-bc-grid dsh-bc-retention-controls' },
+            h('fieldset', { className: 'dsh-bc-retain-choice', 'data-bc': 'retention-mode' },
+              h('legend', { className: 'dsh-bc-label' }, '保留方式'),
+              h('div', { className: 'dsh-bc-segmented' }, [['ratio', '按比例'], ['tokens', '固定 tokens']].map(([value, label]) =>
+                h('label', { key: value, className: 'dsh-bc-segment', 'data-checked': draft.retainMode === value },
+                  h('input', { type: 'radio', name: 'retainMode', value, checked: draft.retainMode === value, disabled,
+                    onChange: (event) => props.onRetentionMode(event.target.value) }), h('span', null, label))))),
+            draft.retainMode === 'ratio'
+              ? h(NumberField, { name: 'retainRatio', label: '消息预算保留比例', ratio: true, value: draft.retainRatio, placeholder: '16', disabled,
+                error: props.fieldError('retainRatio'), help: '留空使用 16%；基数为窗口减去会话输出预留', onChange: (retainRatio) => props.onDraft({ retainRatio }) })
+              : field('retainTokens', '原文保留量', false, '自动压缩时保留的近期原文预算')),
+          h('div', { className: 'dsh-bc-retention-result', 'data-bc': 'retention-composition' },
+            h('div', { className: 'dsh-bc-retention-flow', role: 'img', 'aria-label': '较早消息生成摘要，近期原文保留；示意图，非实际消息占比' },
+              h('div', { className: 'dsh-bc-flow-older' }, h('span', { className: 'dsh-bc-caption' }, '较早消息'),
+                h('span', { className: 'dsh-bc-flow-summary' }, '生成摘要', h('span', { 'aria-hidden': true }, ' →'))),
+              h('div', { className: 'dsh-bc-flow-tail' }, h('span', { className: 'dsh-bc-caption' }, '近期消息'), h('span', null, '保留原文'))),
+            h(Metric, { label: '编辑后原文保留预算', name: 'draft-retain', value: tokensText(projected?.retain) })),
+          h('p', { className: 'dsh-bc-caption' }, '流程为示意；实际原文按完整消息与工具边界保留。')),
+        h(Explain, { title: '运行选区与压缩预览', name: 'runtime-preview' },
+          h('p', { className: 'dsh-bc-caption' }, props.engine?.owner === 'unknown' ? '按本插件运行配置计算，尚未确认此会话的引擎归属。' : '以下来自运行配置的自动压缩候选，与未应用的编辑值独立。'),
+          hasCut ? h('p', { className: 'dsh-bc-note dsh-bc-mono', 'data-bc': 'safe-cut' }, '选区 ' + preview.rangeStart + '–' + preview.rangeEnd + ' · 压缩后预算上界 ≤ ' + tokensText(preview.afterUpperBoundTokens))
+            : h('p', { className: 'dsh-bc-note', 'data-bc': 'no-safe-cut' }, previewAvailable ? '当前无安全压缩选区。' : '读取有效会话诊断后查看选区。'),
+          hasParts ? h('div', { className: 'dsh-bc-composition' },
+            h('div', { className: 'dsh-bc-subhead' }, h('span', null, '压缩前'), h('span', { className: 'dsh-bc-mono' }, tokensText(budget.currentTokens))),
+            h(TokenBar, { name: 'before-bar', scale, ariaLabel: '固定前缀、可压缩消息与实际保留原文', segments: [
+              { key: 'fixed', label: '固定前缀', tokens: budget.fixedTokens, tone: 'fixed' },
+              { key: 'history', label: '可压缩消息', tokens: preview.replacedTokens, tone: 'history' },
+              { key: 'tail', label: '实际保留原文', tokens: preview.retainedTokens, tone: 'tail' }] }),
+            h('div', { className: 'dsh-bc-subhead' }, h('span', null, '压缩后上界'), h('span', { className: 'dsh-bc-mono' }, '≤ ' + tokensText(preview.afterUpperBoundTokens))),
+            h(TokenBar, { name: 'after-bar', scale, ariaLabel: '固定前缀、摘要预算与封装、实际保留原文', segments: [
+              { key: 'fixed', label: '固定前缀', tokens: budget.fixedTokens, tone: 'fixed' },
+              { key: 'summary', label: '摘要预算与封装', tokens: budget.summaryMaxTokens + preview.checkpointFramingTokens, tone: 'summary' },
+              { key: 'tail', label: '实际保留原文', tokens: preview.retainedTokens, tone: 'tail' }] }),
+            h(TokenLegend, { items: [
+              { key: 'fixed', label: '固定前缀', tokens: budget.fixedTokens, tone: 'fixed' },
+              { key: 'summary', label: '摘要预算与封装', tokens: budget.summaryMaxTokens + preview.checkpointFramingTokens, tone: 'summary' },
+              { key: 'tail', label: '实际保留原文', tokens: preview.retainedTokens, tone: 'tail' }] })) : null,
+          previewAvailable ? h(ReasonList, { reasons: props.reasons }) : null),
+        h(Explain, { title: '预算与保留规则' },
+          h('p', { className: 'dsh-bc-caption' }, '触发点 = 向下取整 min（完整窗口 × 触发比例，窗口 − 会话输出预留 − 额外余量）。比例约束留下的空间并非额外余量。'),
+          h('p', { className: 'dsh-bc-caption' }, '消息预算 = 窗口 − 会话输出预留；保留比例基于消息预算。有效保留量必须小于有效触发点。'),
+          h('p', { className: 'dsh-bc-caption' }, '自动压缩按保留预算向完整消息、工具调用与结果边界对齐，实际原文可能更多。手动 /compact 与超限恢复使用更激进的选区，保留参数为 0，仍保留安全边界。'),
+          h('p', { className: 'dsh-bc-caption' }, '摘要输出上限限制摘要生成，独立于会话输出预留。压缩后上界含摘要封装；不是实际摘要长度预测。关闭自动压缩同时关闭自动超限恢复，手动压缩仍可用。')))
     }
+
 
     // ── model / effort section ────────────────────────────────────────────
 
     function ModelSection(props) {
-      const { draft, routes, modelsStatus, modelsEnabled, modelsError, route } = props
-      const nativeMode = draft.mode === 'native'
-      const effortLocked = props.disabled || nativeMode
-      const providerOptions = [...new Set(routes.map((entry) => entry.provider))]
-      const modelOptions = [
-        ...new Set(
-          routes
-            .filter((entry) => draft.provider === '' || entry.provider === draft.provider)
-            .map((entry) => entry.model),
-        ),
-      ]
-      const providerListId = `dsh-bc-providers-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
-      const modelListId = `dsh-bc-models-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`
-      const summaryRoute =
-        draft.provider === '' && draft.model === ''
-          ? '跟随当前会话'
-          : draft.provider === '' || draft.model === ''
-            ? '请成对填写 provider / model'
-            : `${draft.provider}/${draft.model}`
-      const summaryEffort = nativeMode
-        ? NATIVE_NOT_APPLICABLE
-        : draft.effort === ''
-          ? '摘要模型默认值（留空）'
-          : draft.effort
-
-      return h(
-        Section,
-        { name: 'model', title: '摘要模型与思考强度' },
-        h(Field, {
-          name: 'summaryRoute', label: '摘要模型',
-          help: '仅选择摘要路由，不修改主会话模型；候选来自宿主，实际可用性仍由会话决定。',
-          children: (id) => h('select', {
-            id, name: 'summaryRoute', className: 'dsh-bc-input',
-            value: draft.provider === '' && draft.model === '' ? '' : route === undefined ? 'custom' : JSON.stringify([draft.provider, draft.model]),
-            disabled: props.disabled,
-            onChange: (event) => {
-              if (event.target.value === 'custom') return
-              const [provider, model] = event.target.value === '' ? ['', ''] : JSON.parse(event.target.value)
-              props.onDraft({ provider, model })
-            },
-          },
-            h('option', { value: '' }, '跟随当前会话'),
-            routes.map((entry) => h('option', { key: JSON.stringify([entry.provider, entry.model]), value: JSON.stringify([entry.provider, entry.model]) }, entry.provider + ' / ' + entry.model)),
-            h('option', { value: 'custom', disabled: true }, draft.provider || draft.model ? '自定义 / 当前值：' + summaryRoute : '自定义：展开下方输入'),
-          ),
-        }),
-        h('details', { className: 'dsh-bc-explanation', open: route === undefined && (draft.provider !== '' || draft.model !== '') },
-          h('summary', null, '自定义 Provider / Model 与当前值'),
-        h(
-          'div',
-          { className: 'dsh-bc-summary-line', 'data-bc': 'model-summary' },
-          h('span', { className: 'dsh-bc-strong' }, `摘要模型: ${summaryRoute}`),
-          h('span', { className: 'dsh-bc-caption' }, `思考强度：${summaryEffort}`),
-        ),
-        h(
-          'p',
-          { className: 'dsh-bc-caption' },
-          'provider / model 成对保存，留空跟随会话；effort 留空使用摘要模型自身默认值，不无条件继承主模型。',
-        ),
-        h(
-          'div',
-          { className: 'dsh-bc-grid' },
-          h(Field, {
-            name: 'summarizationProvider',
-            label: '摘要 Provider',
-            help: '可自定义；与 model 一起留空即跟随会话。',
-            error: props.fieldError('summarizationProvider'),
-            children: (id) =>
-              h('input', {
-                id,
-                name: 'summarizationProvider',
-                className: 'dsh-bc-input',
-                type: 'text',
-                list: providerListId,
-                value: draft.provider,
-                disabled: props.disabled,
-                autoComplete: 'off',
-                onChange: (event) => props.onProvider(event.target.value),
-              }),
-          }),
-          h(Field, {
-            name: 'summarizationModel',
-            label: '摘要模型',
-            help: '与 provider 成对保存；清空任一项会清空两者。',
-            error: props.fieldError('summarizationModel'),
-            children: (id) =>
-              h('input', {
-                id,
-                name: 'summarizationModel',
-                className: 'dsh-bc-input',
-                type: 'text',
-                list: modelListId,
-                value: draft.model,
-                disabled: props.disabled,
-                autoComplete: 'off',
-                onChange: (event) => props.onModel(event.target.value),
-              }),
-          }),
-          h('datalist', { id: providerListId }, providerOptions.map((provider) => h('option', { key: provider, value: provider }))),
-          h('datalist', { id: modelListId }, modelOptions.map((model) => h('option', { key: model, value: model }))),
-        ),
-        ),
-        h(
-          'div',
-          { className: 'dsh-bc-effort' },
-          route !== undefined && route.efforts.length > 0
-            ? h(Field, {
-                name: 'reasoningEffort',
-                label: '思考强度',
-                help: nativeMode
-                  ? NATIVE_NOT_APPLICABLE
-                  : draft.effort === ''
-                    ? '留空使用摘要模型的默认强度。'
-                    : '候选来自所选模型能力。',
-                error: props.fieldError('reasoningEffort'),
-                children: (id) =>
-                  h(
-                    'select',
-                    {
-                      id,
-                      name: 'reasoningEffort',
-                      className: 'dsh-bc-input',
-                      value: draft.effort,
-                      disabled: effortLocked,
-                      onChange: (event) => props.onDraft({ effort: event.target.value }),
-                    },
-                    h('option', { value: '' }, '摘要模型默认值（留空）'),
-                    route.efforts.map((effort) =>
-                      h('option', { key: effort, value: effort }, effort === route.defaultEffort ? `${effort} （模型默认）` : effort),
-                    ),
-                    draft.effort !== '' && !route.efforts.includes(draft.effort)
-                      ? h('option', { value: draft.effort }, `${draft.effort} （当前值；未声明支持）`)
-                      : null,
-                  ),
-              })
-            : h(Field, {
-                name: 'reasoningEffort',
-                label: '思考强度',
-                help: nativeMode
-                  ? NATIVE_NOT_APPLICABLE
-                  : modelsStatus === 'error'
-                    ? '模型能力不可用；可自定义，实际请求可能被拒绝。'
-                    : '此路由能力 unknown；可自定义或留空。',
-                error: props.fieldError('reasoningEffort'),
-                children: (id) =>
-                  h('input', {
-                    id,
-                    name: 'reasoningEffort',
-                    className: 'dsh-bc-input',
-                    type: 'text',
-                    value: draft.effort,
-                    disabled: effortLocked,
-                    placeholder: nativeMode ? NATIVE_NOT_APPLICABLE : '摘要模型默认值（留空）',
-                    autoComplete: 'off',
-                    onChange: (event) => props.onDraft({ effort: event.target.value }),
-                  }),
-              }),
-          nativeMode
-            ? h('p', { className: 'dsh-bc-note', 'data-bc': 'effort-native' }, `思考强度: ${NATIVE_NOT_APPLICABLE}. 保留当前值供切回增强模式。`)
-            : null,
-        ),
-        props.routeWarning === null || props.routeWarning === undefined
-          ? null
-          : h(
-              'p',
-              { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'route-warning' },
-              props.routeWarning,
-            ),
-        h(
-          'div',
-          { className: 'dsh-bc-candidates' },
-          modelsStatus === 'loading' || modelsStatus === 'refreshing'
-            ? h('p', { className: 'dsh-bc-note', role: 'status' }, '正在读取宿主模型候选…')
-            : modelsStatus === 'error'
-              ? h(
-                  'p',
-                  { className: 'dsh-bc-note', 'data-bc': 'models-error' },
-                  `宿主候选元数据不可用：${modelsError}。仍可自定义 provider / model；能力未知（unknown）。`,
-                )
-              : modelsEnabled !== true
-                ? h(
-                    'p',
-                    { className: 'dsh-bc-note', 'data-bc': 'models-unavailable' },
-                    '宿主未启用候选服务；可自定义，模型能力与实际可用性 unknown。',
-                  )
-                : h(
-                    'details',
-                    { className: 'dsh-bc-candidate-details' },
-                    h('summary', null, `宿主提供的模型候选（${routes.length}）`),
-                    routes.length === 0
-                      ? h('p', { className: 'dsh-bc-note' }, '宿主未提供候选；可自定义。')
-                      : h(
-                          'ul',
-                          { className: 'dsh-bc-candidate-list' },
-                          routes.map((entry) =>
-                            h(
-                              'li',
-                              { key: `${entry.provider}/${entry.model}` },
-                              h('span', { className: 'dsh-bc-strong' }, `${entry.provider}/${entry.model}`),
-                              h(
-                                'span',
-                                { className: 'dsh-bc-caption' },
-                                entry.efforts.length === 0
-                                  ? ' · efforts: unknown'
-                                  : ` · efforts: ${entry.efforts.join(', ')}${entry.defaultEffort === '' ? '' : ` (default ${entry.defaultEffort})`}`,
-                              ),
-                            ),
-                          ),
-                        ),
-                    h(
-                      'p',
-                      { className: 'dsh-bc-caption' },
-                      '候选不保证当前会话可用；此只读页不验证凭据或容量。',
-                    ),
-                  ),
-        ),
-      )
-    }
-
-    // ── cache section ─────────────────────────────────────────────────────
-
-    function CacheSection(props) {
-      const nativeMode = props.draft.mode === 'native'
-      return h(
-        Section,
-        { name: 'cache', title: '缓存优先' },
-        h(Toggle, {
-          name: 'cachePriority',
-          label: CACHE_PRIORITY_COPY,
-          checked: props.draft.cachePriority,
-          disabled: props.disabled || nativeMode,
-          onChange: (checked) => props.onDraft({ cachePriority: checked }),
-          help:
-            '增强摘要保留正常提示 / 工具 / 历史前缀，将动态指令放在末尾以尽可能复用缓存。',
-          note: nativeMode
-            ? `${NATIVE_NOT_APPLICABLE}. 保留增强配置供切回。`
-            : null,
-        }),
-        h(
-          'details',
-          { className: 'dsh-bc-explanation' },
-          h('summary', null, '缓存边界说明'),
-          h('p', { className: 'dsh-bc-caption' }, '切换摘要 provider / model 可能减少前缀复用。'),
-          h('p', { className: 'dsh-bc-caption' }, 'replacement 改变旧前缀；保留原文不等于保留旧 KV。'),
-          h('p', { className: 'dsh-bc-caption' }, '不保证无损 KV 或零缓存损失；只有 provider 返回 usage 才展示实测。'),
-        ),
-      )
+      const { draft, routes, route, disabled } = props
+      const native = draft.mode === 'native'
+      const custom = !route && (draft.provider !== '' || draft.model !== '')
+      const textField = (name, label, value, onChange) => h(Field, { name, label, error: props.fieldError(name), children: (id, aria) =>
+        h('input', { ...aria, id, name, className: 'dsh-bc-input', value, disabled, onChange: (event) => onChange(event.target.value) }) })
+      return h(Section, { name: 'model', title: '摘要生成' },
+        h('div', { className: 'dsh-bc-grid' },
+          h(Field, { name: 'summaryRoute', label: '摘要模型', error: props.fieldError('summarizationModel'), children: (id, aria) =>
+            h('select', { ...aria, id, name: 'summaryRoute', className: 'dsh-bc-input',
+              value: custom ? 'custom' : draft.provider === '' ? '' : JSON.stringify([draft.provider, draft.model]), disabled,
+              onChange: (event) => { if (event.target.value === 'custom') return; const [provider, model] = event.target.value === '' ? ['', ''] : JSON.parse(event.target.value); props.onDraft({ provider, model }) } },
+              h('option', { value: '' }, '跟随会话模型'), routes.map((entry) => h('option', { key: JSON.stringify([entry.provider, entry.model]), value: JSON.stringify([entry.provider, entry.model]) }, entry.provider + '/' + entry.model)),
+              custom ? h('option', { value: 'custom' }, draft.provider + '/' + draft.model) : null) }),
+          h(Field, { name: 'reasoningEffort', label: '思考强度', error: props.fieldError('reasoningEffort'), children: (id, aria) =>
+            route ? h('select', { ...aria, id, name: 'reasoningEffort', className: 'dsh-bc-input', value: draft.effort, disabled: disabled || native,
+              onChange: (event) => props.onDraft({ effort: event.target.value }) },
+              h('option', { value: '' }, native ? NATIVE_NOT_APPLICABLE : '模型默认'), route.efforts.map((effort) => h('option', { key: effort, value: effort }, effort)),
+              draft.effort !== '' && !route.efforts.includes(draft.effort) ? h('option', { value: draft.effort }, draft.effort + ' · 未声明支持') : null)
+              : h('input', { ...aria, id, name: 'reasoningEffort', className: 'dsh-bc-input', value: draft.effort, disabled: disabled || native,
+                placeholder: native ? NATIVE_NOT_APPLICABLE : '模型默认；能力未知', onChange: (event) => props.onDraft({ effort: event.target.value }) }) }),
+          h(NumberField, { name: 'maxTokens', label: '摘要输出上限', value: draft.maxTokens, min: 1, disabled, placeholder: draft.headroomTokens,
+            help: '留空跟随额外余量', error: props.fieldError('maxTokens'), onChange: (maxTokens) => props.onDraft({ maxTokens }) }),
+          h(Toggle, { name: 'cachePriority', label: CACHE_PRIORITY_COPY, checked: draft.cachePriority, disabled: disabled || native,
+            onChange: (cachePriority) => props.onDraft({ cachePriority }), note: native ? '思考强度与缓存优先由原生引擎决定。' : null })),
+        h(Explain, { title: '自定义摘要模型', open: custom || undefined },
+          h('div', { className: 'dsh-bc-grid' },
+            textField('summarizationProvider', '服务商', draft.provider, props.onProvider),
+            textField('summarizationModel', '模型', draft.model, props.onModel))),
+        props.routeWarning ? h('p', { className: 'dsh-bc-note', 'data-bc': 'route-warning' }, props.routeWarning) : null,
+        props.modelsStatus === 'loading' || props.modelsStatus === 'refreshing' ? h('p', { className: 'dsh-bc-caption', role: 'status' }, '读取模型列表…')
+          : props.modelsStatus === 'error' ? h('p', { className: 'dsh-bc-note' }, '模型列表读取失败，可使用自定义模型。') : null,
+        h(Explain, { title: '摘要生成规则' },
+          h('p', { className: 'dsh-bc-caption' }, '摘要模型只负责压缩，不改变主会话模型。服务商与模型留空时跟随会话；思考强度留空时使用摘要模型自身默认值。'),
+          h('p', { className: 'dsh-bc-caption' }, '摘要输出上限与摘要输入共用该模型的窗口。设置过高可能无法容纳待压缩的历史；设置过低可能导致摘要截断。'),
+          h('p', { className: 'dsh-bc-caption' }, '缓存优先会保留提示、工具与历史前缀，将动态指令放在末尾。切换模型或替换旧消息可能影响复用，命中量以服务商返回值为准。')))
     }
 
     // ── advanced section ──────────────────────────────────────────────────
 
     function AdvancedSection(props) {
-      const { draft, stateValue, disabled } = props
-      const policies = Array.isArray(stateValue?.modelPolicies) ? stateValue.modelPolicies : []
-      return h(
-        'details',
-        { className: 'dsh-bc-details', 'data-bc': 'advanced' },
-        h('summary', null, '高级选项'),
-        h(
-          'div',
-          { className: 'dsh-bc-details-body' },
-          h(Toggle, {
-            name: 'auto',
-            label: '自动阈值 / 超限压缩',
-            checked: draft.auto,
-            disabled,
-            onChange: (checked) => props.onDraft({ auto: checked }),
-            help: '关闭后停止自动阈值 / 超限压缩；手动 /compact 仍可用。',
-          }),
-          h(
-            'div',
-            { className: 'dsh-bc-grid' },
-            h(Field, {
-              name: 'headroomTokens',
-              label: '额外预留（headroomTokens）',
-              help: '路由输出预留之外的额外空间，非负整数。',
-              error: props.fieldError('headroomTokens'),
-              children: (id) =>
-                h('input', {
-                  id,
-                  name: 'headroomTokens',
-                  className: 'dsh-bc-input dsh-bc-mono',
-                  type: 'text',
-                  inputMode: 'numeric',
-                  value: draft.headroomTokens,
-                  disabled,
-                  onChange: (event) => props.onDraft({ headroomTokens: event.target.value }),
-                }),
-            }),
-            h(Field, {
-              name: 'maxTokens',
-              label: '摘要输出上限（maxTokens）',
-              help: '正整数，与输入共用窗口；留空跟随有效 headroom。',
-              error: props.fieldError('maxTokens'),
-              children: (id) =>
-                h('input', {
-                  id,
-                  name: 'maxTokens',
-                  className: 'dsh-bc-input dsh-bc-mono',
-                  type: 'text',
-                  inputMode: 'numeric',
-                  value: draft.maxTokens,
-                  placeholder: '继承 headroomTokens',
-                  disabled,
-                  onChange: (event) => props.onDraft({ maxTokens: event.target.value }),
-                }),
-            }),
-            h(Field, {
-              name: 'compactionRetries',
-              label: '压力残留重试（compactionRetries）',
-              help: '压缩成功后仍有压力时的额外次数；不是网络重试。',
-              error: props.fieldError('compactionRetries'),
-              children: (id) =>
-                h('input', {
-                  id,
-                  name: 'compactionRetries',
-                  className: 'dsh-bc-input dsh-bc-mono',
-                  type: 'text',
-                  inputMode: 'numeric',
-                  value: draft.compactionRetries,
-                  disabled,
-                  onChange: (event) => props.onDraft({ compactionRetries: event.target.value }),
-                }),
-            }),
-            h(Field, {
-              name: 'maxOverflowRetries',
-              label: '超限恢复次数（maxOverflowRetries）',
-              help: 'provider 确认上下文超限后的有界恢复次数；0 表示关闭，与压缩后压力残留重试分开。',
-              error: props.fieldError('maxOverflowRetries'),
-              children: (id) =>
-                h('input', {
-                  id,
-                  name: 'maxOverflowRetries',
-                  className: 'dsh-bc-input dsh-bc-mono',
-                  type: 'text',
-                  inputMode: 'numeric',
-                  value: draft.maxOverflowRetries,
-                  disabled,
-                  onChange: (event) => props.onDraft({ maxOverflowRetries: event.target.value }),
-                }),
-            }),
-          ),
-          h(
-            'div',
-            { className: 'dsh-bc-policies', 'data-bc': 'model-policies' },
-            h('h4', { className: 'dsh-bc-h4' }, '按模型覆盖（只读）'),
-            policies.length === 0
-              ? h('p', { className: 'dsh-bc-note' }, '未配置按模型覆盖；路由继承全局值。')
-              : h(
-                  'ul',
-                  { className: 'dsh-bc-policy-list' },
-                  policies.map((policy, index) => {
-                    const overrides = Object.keys(policy)
-                      .filter((key) => key !== 'provider' && key !== 'model')
-                      .map((key) => `${key}=${JSON.stringify(policy[key])}`)
-                    return h(
-                      'li',
-                      { key: `${policy.provider}/${policy.model}/${index}` },
-                      h('span', { className: 'dsh-bc-strong' }, `${policy.provider}/${policy.model}`),
-                      h('span', { className: 'dsh-bc-caption' }, overrides.length === 0 ? ' · inherits everything' : ` · ${overrides.join(', ')}`),
-                    )
-                  }),
-                ),
-            h(
-              'p',
-              { className: 'dsh-bc-caption' },
-              'These overrides are preserved as-is. Saving the global form never rewrites or drops modelPolicies, and this version has no rule editor.',
-            ),
-          ),
-          h(
-            'p',
-            { className: 'dsh-bc-caption' },
-            '不提供交接目录、独立压缩历史、后台记忆或 sidecar 数据库。交接文件位于系统临时目录，不是唯一恢复来源。',
-          ),
-        ),
-      )
+      const { draft, disabled } = props
+      const updatePolicy = (index, patch) => props.onDraft({ policies: draft.policies.map((entry, i) => i === index ? { ...entry, ...patch } : entry) })
+      const policyField = (index, key, label, ratio, placeholder) => h(NumberField, {
+        name: 'policies.' + index + '.' + key, label, ratio, value: draft.policies[index][key], disabled: disabled || !draft.auto && (key === 'thresholdRatio' || key === 'compactionRetries' || key === 'maxOverflowRetries'),
+        placeholder, error: props.fieldError('policies.' + index + '.' + key), onChange: (value) => updatePolicy(index, { [key]: value }) })
+      const policyText = (index, key, label) => h(Field, { name: 'policies.' + index + '.' + key, label,
+        error: props.fieldError('policies.' + index + '.' + key), children: (id, aria) => h('input', {
+          ...aria, id, name: 'policies.' + index + '.' + key, className: 'dsh-bc-input', value: draft.policies[index][key], disabled,
+          onChange: (event) => updatePolicy(index, { [key]: event.target.value }) }) })
+      return h('details', { className: 'dsh-bc-details', 'data-bc': 'advanced' },
+        h('summary', null, '高级设置'),
+        h('div', { className: 'dsh-bc-details-body' },
+          h('div', { className: 'dsh-bc-grid' },
+            h(NumberField, { name: 'compactionRetries', label: '压力残留重试', unit: '次', value: draft.compactionRetries, disabled: disabled || !draft.auto,
+              error: props.fieldError('compactionRetries'), onChange: (compactionRetries) => props.onDraft({ compactionRetries }) }),
+            h(NumberField, { name: 'maxOverflowRetries', label: '超限恢复次数', unit: '次', value: draft.maxOverflowRetries, disabled: disabled || !draft.auto,
+              error: props.fieldError('maxOverflowRetries'), onChange: (maxOverflowRetries) => props.onDraft({ maxOverflowRetries }) })),
+          h(Explain, { title: '重试规则' },
+            h('p', { className: 'dsh-bc-caption' }, '压力残留重试：压缩成功后仍有压力时的额外尝试次数，并非网络重试。超限恢复：服务商确认上下文超限后的恢复次数，0 为关闭；自动压缩关闭时不启用。')),
+          h('div', { className: 'dsh-bc-subhead' }, h('h4', { className: 'dsh-bc-h4' }, '按模型覆盖'),
+            h('button', { type: 'button', className: 'dsh-bc-btn', disabled, 'data-bc': 'add-policy',
+              onClick: () => props.onDraft({ policies: [...draft.policies, policyDraft()] }) }, '添加规则')),
+          draft.policies.length === 0 ? h('p', { className: 'dsh-bc-caption' }, '所有模型使用全局设置。') : null,
+          draft.policies.map((policy, index) => h('details', { key: index, className: 'dsh-bc-policy', open: !policy.provider || !policy.model ? true : undefined, 'data-bc-policy': index },
+            h('summary', { className: 'dsh-bc-mono' }, policy.provider && policy.model ? policy.provider + '/' + policy.model : '新规则'),
+            h('div', { className: 'dsh-bc-policy-body' },
+              h('div', { className: 'dsh-bc-grid' }, policyText(index, 'provider', '会话服务商'), policyText(index, 'model', '会话模型'),
+                POLICY_NUMBERS.map(([key, label, ratio]) => h(React.Fragment, { key }, policyField(index, key, label, ratio,
+                  ratio ? String(Number(draft[key]) * 100) : key === 'maxTokens' ? draft.maxTokens || policy.headroomTokens || draft.headroomTokens : draft[key]))),
+                h(Field, { name: 'policies.' + index + '.retainMode', label: '原文保留方式', children: (id) => h('select', {
+                  id, name: 'policies.' + index + '.retainMode', className: 'dsh-bc-input', value: policy.retainMode, disabled,
+                  onChange: (event) => updatePolicy(index, { retainMode: event.target.value }) },
+                  h('option', { value: 'inherit' }, '继承全局设置'), h('option', { value: 'ratio' }, '按消息预算比例'), h('option', { value: 'tokens' }, '固定 token 数')) }),
+                policy.retainMode !== 'inherit' ? policyField(index, policy.retainMode === 'ratio' ? 'retainRatio' : 'retainTokens',
+                  policy.retainMode === 'ratio' ? '保留比例' : '保留量', policy.retainMode === 'ratio') :
+                  props.fieldError('policies.' + index + '.retainRatio') ? h('p', { className: 'dsh-bc-error', role: 'alert' }, props.fieldError('policies.' + index + '.retainRatio')) : null,
+                h(Field, { name: 'policies.' + index + '.summaryMode', label: '摘要模型', children: (id) => h('select', {
+                  id, name: 'policies.' + index + '.summaryMode', className: 'dsh-bc-input', value: policy.summaryMode, disabled,
+                  onChange: (event) => updatePolicy(index, { summaryMode: event.target.value }) },
+                  h('option', { value: 'inherit' }, '继承全局设置'), h('option', { value: 'session' }, '跟随会话模型'), h('option', { value: 'custom' }, '指定摘要模型')) }),
+                policy.summaryMode === 'custom' ? h(React.Fragment, null,
+                  policyText(index, 'summarizationProvider', '摘要服务商'), policyText(index, 'summarizationModel', '摘要模型')) : null),
+              h('div', { className: 'dsh-bc-subhead' }, h('span', { className: 'dsh-bc-caption' }, '数值留空继承；模型名称精确匹配。'),
+                h('button', { type: 'button', className: 'dsh-bc-btn dsh-bc-btn-remove', disabled, 'aria-label': '删除规则 ' + (index + 1),
+                  onClick: () => props.onDraft({ policies: draft.policies.filter((_, i) => i !== index) }) }, '删除规则'))))),
+          h(Explain, { title: '覆盖规则的生效方式' },
+            h('p', { className: 'dsh-bc-caption' }, '规则匹配主会话的服务商与模型，不匹配摘要模型。空白数值继承全局；保留方式只能选择一种。每个模型只能有一条规则。'),
+            h('p', { className: 'dsh-bc-caption' }, '全局未指定摘要输出上限时，规则的额外余量也作为该模型的摘要输出上限；若余量为 0，须显式设置正数输出上限。'))))
     }
 
     // ── status section ────────────────────────────────────────────────────
@@ -1622,291 +1095,78 @@ window.__ModuleLoader__.load({
     /** The status of the last real native compaction bracket. */
     function LastCompaction(props) {
       const record = props.record
-      if (record === null || record === undefined) {
-        return h('p', { className: 'dsh-bc-unknown', 'data-bc': 'last-compaction-empty' }, props.emptyText)
-      }
-      const status = STATUS_LABELS[record.status] ?? '未知状态（unknown）'
-      const cacheRead = typeof record.cacheReadTokens === 'number' ? record.cacheReadTokens : null
-      const cacheWrite = typeof record.cacheWriteTokens === 'number' ? record.cacheWriteTokens : null
-      const cacheRows = [
-        cacheRead === null
-          ? null
-          : h(Row, { key: 'cache-read', label: '缓存读取 token（实测）', value: tokensText(cacheRead) }),
-        cacheWrite === null
-          ? null
-          : h(Row, { key: 'cache-write', label: '缓存写入 token（实测）', value: tokensText(cacheWrite) }),
-      ].filter((row) => row !== null)
-      return h(
-        'div',
-        { className: 'dsh-bc-status-record', 'data-bc': 'last-compaction', 'data-status': record.status ?? 'unknown' },
-        h('p', { className: `dsh-bc-status-line dsh-bc-status-${record.status ?? 'unknown'}`, 'data-bc': 'last-compaction-status' }, `${status} · ${record.trigger === 'manual' ? '手动' : record.trigger === 'automatic' ? '自动' : '触发原因未知（unknown）'}`),
-        h(
-          'div',
-          { className: 'dsh-bc-status-grid' },
-          h(Row, { label: '触发原因', value: record.trigger === 'manual' ? '手动' : record.trigger === 'automatic' ? '自动' : '未知（unknown）' }),
-          h(Row, { label: '状态', value: status }),
-          h(Row, { label: '历史模式', value: typeof record.mode === 'string' ? record.mode : '未知（unknown；原生记录无法证明）' }),
+      if (!record) return h('p', { className: 'dsh-bc-caption', 'data-bc': props.emptyName ?? 'last-compaction-empty' }, props.emptyText)
+      return h('div', { className: 'dsh-bc-status-record', 'data-bc': 'last-compaction', 'data-status': record.status },
+        h('p', { className: 'dsh-bc-status-line dsh-bc-status-' + record.status }, (STATUS_LABELS[record.status] ?? '未知') + ' · ' + (record.trigger === 'manual' ? '手动' : record.trigger === 'automatic' ? '自动' : '触发原因未知')),
+        h('div', { className: 'dsh-bc-status-grid' },
+          h(Row, { label: '压缩策略', value: MODE_META[record.mode]?.label ?? '未知' }),
           h(Row, { label: '耗时', value: durationText(record.durationMs) }),
-          h(Row, { label: '压缩前 token（已替换区）', value: tokensText(record.beforeTokens) }),
-          h(Row, { label: '压缩后 checkpoint 估算', value: tokensText(record.afterTokens) }),
-          ...cacheRows,
-        ),
-        cacheRows.length === 0
-          ? h('p', { className: 'dsh-bc-caption' }, '缓存用量未知（unknown）：provider 未报告本次缓存 token；缺失不等于 0，不估算节省率。')
-          : null,
-        h(
-          'p',
-          { className: 'dsh-bc-caption' },
-          '费用未知（unknown；诊断无价格数据）。token 来自原生事件 / usage；缺失字段不使用当前配置补造。',
-        ),
-        record.status === 'persistence-error'
-          ? h(
-              'p',
-              { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'persistence-error' },
-              'checkpoint 替换可能已持久化，但会话保存失败；并非普通成功，也不是全部回滚。',
-            )
-          : null,
-        record.status === 'failed'
-          ? h(
-              'p',
-              { className: 'dsh-bc-note' },
-              '本次生成失败，未安装 checkpoint；这不代表会话此前没有持久化变更。',
-            )
-          : null,
-        record.status === 'cancelled'
-          ? h('p', { className: 'dsh-bc-note' }, '本次已取消，未安装 checkpoint。')
-          : null,
-        record.status === 'running'
-          ? h('p', { className: 'dsh-bc-note' }, '本进程正在生成摘要（内存态），不代表历史记录已完成。')
-          : null,
-        record.error === null || record.error === undefined
-          ? null
-          : h('p', { className: 'dsh-bc-error', 'data-bc': 'last-compaction-error' }, `原生记录错误：${record.error}`),
-      )
+          h(Row, { label: '已替换消息', value: tokensText(record.beforeTokens) }),
+          h(Row, { label: '摘要消息估算', value: tokensText(record.afterTokens) }),
+          h(Row, { label: '缓存读取', value: tokensText(record.cacheReadTokens) }),
+          h(Row, { label: '缓存写入', value: tokensText(record.cacheWriteTokens) })),
+        record.status === 'persistence-error' ? h('p', { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'persistence-error' }, '摘要可能已写入，但会话保存失败。') : null,
+        record.error ? h('p', { className: 'dsh-bc-error', role: 'alert' }, record.error) : null,
+        h('p', { className: 'dsh-bc-caption' }, '消息用量仅对应本次替换区；缓存用量来自摘要请求。未报告的数值显示为未知。'))
     }
 
-    /** 最近一次原生压缩, handoff continuation, diagnostics and engine ownership. */
     function StatusSection(props) {
-      const { sessionId, engine, engineApplies, record, continuation, diagnostics, inspectError, inspectLoading } = props
-      const reasons = []
-      const seen = new Set()
-      for (const entry of diagnostics ?? []) {
-        if (typeof entry !== 'string' || entry.length === 0 || seen.has(entry)) continue
-        seen.add(entry)
-        reasons.push(entry)
-      }
-      return h(
-        Section,
-        { name: 'status', title: '最近一次原生压缩' },
-        h('p', { className: 'dsh-bc-caption' }, '只读展示原生事件与 usage，缺失字段为 unknown。'),
-        h('p', { className: 'dsh-bc-note', 'data-bc': 'engine-note' }, engineNote(engine)),
-        inspectError !== null && inspectError !== undefined
-          ? h('p', { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'inspect-error' }, `${inspectError}。表单仍可编辑，仅只读状态受影响。`)
-          : null,
-        sessionId === ''
-          ? h('p', { className: 'dsh-bc-unknown', 'data-bc': 'status-empty' }, '尚未选择会话；选择后查看最近原生压缩记录。')
-          : inspectLoading
-            ? h('p', { className: 'dsh-bc-note', role: 'status' }, '正在读取原生压缩状态…')
-            : h(LastCompaction, {
-                record,
-                emptyText: engineApplies === false
-                  ? '该会话原生事件中未找到压缩记录。'
-                  : '该会话暂无压缩记录。',
-              }),
-        continuation === null || continuation === undefined
-          ? null
-          : h(
-              'div',
-              { className: 'dsh-bc-continuation', 'data-bc': 'handoff-continuation', 'data-status': continuation.status },
-              h('h4', { className: 'dsh-bc-h4' }, 'Handoff 续作'),
-              h(
-                'p',
-                { className: 'dsh-bc-strong' },
-                continuation.status === 'scheduled'
-                  ? '已调度：本次手动 Handoff 成功后，排入一次同会话普通续作。'
-                  : '已跳过：未调度自动续作，等待用户或阻塞条件解除。',
-              ),
-              Array.isArray(continuation.blockers) && continuation.blockers.length > 0
-                ? h(
-                    'ul',
-                    { className: 'dsh-bc-bullets' },
-                    continuation.blockers.map((blocker, index) => h('li', { key: `${index}-${blocker}` }, String(blocker))),
-                  )
-                : null,
-              h('p', { className: 'dsh-bc-caption' }, '历史重放、刷新页面或重载插件不会再次调度续作。'),
-            ),
-        reasons.length > 0
-          ? h(
-              'div',
-              { className: 'dsh-bc-diagnostics', 'data-bc': 'diagnostics' },
-              h('h4', { className: 'dsh-bc-h4' }, '诊断原因'),
-              h(ReasonList, { reasons }),
-            )
-          : null,
-      )
+      const reasons = [...new Set((props.diagnostics ?? []).filter((entry) => typeof entry === 'string' && entry !== ''))]
+      return h('details', { className: 'dsh-bc-details', 'data-bc-section': 'status' },
+        h('summary', null, '会话诊断'), h('div', { className: 'dsh-bc-details-body' },
+          h('p', { className: 'dsh-bc-caption', 'data-bc': 'engine-note' }, engineNote(props.engine)),
+          props.inspectError ? h('p', { className: 'dsh-bc-error', role: 'alert' }, props.inspectError)
+            : props.inspectLoading ? h('p', { className: 'dsh-bc-note', role: 'status' }, '读取诊断…')
+            : h(LastCompaction, { record: props.record, emptyName: props.sessionId === '' ? 'status-empty' : 'last-compaction-empty', emptyText: props.sessionId === '' ? '选择会话查看压缩记录。' : '此会话暂无压缩记录。' }),
+          props.continuation ? h('div', { className: 'dsh-bc-continuation', 'data-bc': 'handoff-continuation' },
+            h('h4', { className: 'dsh-bc-h4' }, '文件交接续作'),
+            h('p', { className: 'dsh-bc-note' }, props.continuation.status === 'scheduled' ? '已安排一次同会话续作。' : '本次续作已跳过。'),
+            props.continuation.blockers?.length ? h('ul', { className: 'dsh-bc-bullets' }, props.continuation.blockers.map((item, index) => h('li', { key: index }, item))) : null) : null,
+          reasons.length ? h(Explain, { title: '诊断详情（' + reasons.length + '）' }, h(ReasonList, { reasons })) : null))
     }
-
-    // ── session picker ────────────────────────────────────────────────────
 
     function SessionPicker(props) {
-      const rawId = useId()
-      const id = `dsh-bc-session-${rawId.replace(/[^a-zA-Z0-9_-]/g, '')}`
-      const { entries, selectedId, onSelect, listAvailable, phase, listError, refresh, onRefresh } = props
-      return h(
-        'div',
-        { className: 'dsh-bc-session', 'data-bc': 'session-picker' },
-        h(
-          'div',
-          { className: 'dsh-bc-session-row' },
-          h('label', { htmlFor: id, className: 'dsh-bc-label' }, '诊断会话'),
-          h(
-            'select',
-            {
-              id,
-              name: 'inspectSession',
-              className: 'dsh-bc-input',
-              value: selectedId,
-              onChange: (event) => onSelect(event.target.value),
-            },
-            h('option', { value: '' }, '仅插件状态（不选会话）'),
-            entries.map((entry) =>
-              h('option', { key: entry.id, value: entry.id }, `${entry.title}${entry.running ? ' · 运行中' : ''} — ${entry.id}`),
-            ),
-          ),
-        ),
-        h(
-          'p',
-          { className: 'dsh-bc-caption' },
-          !listAvailable
-            ? '会话列表不可用，仅显示插件状态。'
-            : listError !== null && listError !== undefined
-              ? `会话列表不可用（${typeof listError.message === 'string' ? listError.message : 'error'}），仅显示插件状态。`
-              : entries.length === 0
-                ? phase === 'pending'
-                  ? '正在加载会话…'
-                  : '暂无会话，仅显示插件状态。'
-                : '只读诊断，不触发压缩、LLM、CLI 或文件写入。',
-        ),
-        h(
-          'div',
-          { className: 'dsh-bc-session-actions' },
-          h(
-            'button',
-            { type: 'button', className: 'dsh-bc-btn', onClick: onRefresh, disabled: refresh === true },
-            refresh === true ? '读取中…' : '刷新诊断',
-          ),
-        ),
-      )
+      const id = 'dsh-bc-session-' + useId().replace(/[^a-zA-Z0-9_-]/g, '')
+      return h('div', { className: 'dsh-bc-session', 'data-bc': 'session-picker' },
+        h('label', { htmlFor: id, className: 'dsh-bc-sr-only' }, '诊断会话'),
+        h('select', { id, name: 'inspectSession', className: 'dsh-bc-input', value: props.selectedId,
+          onChange: (event) => props.onSelect(event.target.value), title: '选择用于预算与诊断的会话' },
+          h('option', { value: '' }, props.phase === 'pending' ? '加载会话…' : '选择会话'),
+          props.entries.map((entry) => h('option', { key: entry.id, value: entry.id }, entry.title + (entry.running ? ' · 运行中' : '')))),
+        h('button', { type: 'button', className: 'dsh-bc-btn', onClick: props.onRefresh, disabled: props.refresh, 'aria-label': '刷新会话诊断' }, props.refresh ? '读取中…' : '刷新'),
+        props.listError ? h('span', { className: 'dsh-bc-error' }, '会话列表读取失败') : null)
     }
-
-    // ── active config banner + save footer ───────────────────────────────
 
     function ActiveConfigBanner(props) {
       const active = props.activeConfig
-      const unknown = active === null || active === undefined
-      const status = props.requiresReload === true
-        ? '已保存配置待重载 profile'
-        : props.requiresReload === false ? '已保存配置与运行快照一致' : '运行快照 unknown，暂无法比较'
-      return h('div', {
-        className: 'dsh-bc-banner' + (props.requiresReload === true ? ' dsh-bc-banner-warn' : ''),
-        'data-bc': 'active-config',
-        'data-requires-reload': props.requiresReload === true ? 'true' : props.requiresReload === false ? 'false' : 'unknown',
-      },
-        h('p', { className: 'dsh-bc-banner-title' },
-          (props.dirty ? '有未保存草稿 · ' : '') + status + (unknown ? '' : ' · 运行：' + (MODE_META[active.mode]?.label ?? active.mode))),
-        h('details', { className: 'dsh-bc-explanation' },
-          h('summary', null, '运行快照与生效方式'),
-          unknown ? h('p', { className: 'dsh-bc-caption' }, 'activeConfig unknown（只读诊断未返回）。')
-            : h('div', { className: 'dsh-bc-status-grid' },
-              h(Row, { label: '运行模式', value: active.mode }),
-              h(Row, { label: '运行摘要路由', value: active.summarizationProvider || active.summarizationModel ? active.summarizationProvider + '/' + active.summarizationModel : '跟随会话' }),
-              h(Row, { label: '运行思考强度', value: active.mode === 'native' ? NATIVE_NOT_APPLICABLE : active.reasoningEffort || '摘要模型默认值' }),
-              h(Row, { label: '运行缓存优先', value: active.mode === 'native' ? NATIVE_NOT_APPLICABLE : active.cachePriority ? '开启' : '关闭' }),
-              h(Row, { label: '运行阈值', value: ratioText(active.thresholdRatio) }),
-              h(Row, { label: '运行保留量', value: typeof active.retainTokens === 'number' ? tokensText(active.retainTokens) : ratioText(active.retainRatio) }),
-            ),
-          h('p', { className: 'dsh-bc-caption' }, '编辑只是草稿；保存走宿主 revision / CAS。保存后重启 DSH / 重载 profile 才应用，刷新网页不重载引擎。'),
-        ),
-      )
+      const status = props.requiresReload === true ? '已保存，待重载' : !active ? '运行状态未知' : '运行中 · ' + (MODE_META[active.mode]?.label ?? active.mode)
+      return h('div', { className: 'dsh-bc-banner', 'data-bc': 'active-config', 'data-requires-reload': String(props.requiresReload) },
+        h('span', { className: 'dsh-bc-banner-title' }, status),
+        h(Explain, { title: '生效方式' },
+          h('p', { className: 'dsh-bc-caption' }, '保存后需重启 DSH 或重载配置档。刷新网页不会更新运行引擎。'),
+          active ? h('div', { className: 'dsh-bc-status-grid' },
+            h(Row, { label: '运行策略', value: MODE_META[active.mode]?.label ?? active.mode }),
+            h(Row, { label: '运行摘要模型', value: active.summarizationProvider ? active.summarizationProvider + '/' + active.summarizationModel : '跟随会话' }),
+            h(Row, { label: '运行触发比例', value: ratioText(active.thresholdRatio) }),
+            h(Row, { label: '运行保留预算', value: active.retainTokens != null ? tokensText(active.retainTokens) : ratioText(active.retainRatio) })) : null))
     }
 
     function SaveFooter(props) {
-      const { saveState, errors, conflict, disabled, saving, writable, revision, onSave, onReload, dirty } = props
-      const savingNow = saving || saveState.kind === 'saving'
-      const saveDisabled = disabled || savingNow || conflict || !writable || !dirty || errors.length > 0
-      const messages = []
-      if (saveState.kind === 'saved') {
-        messages.push(
-          h(
-            'p',
-            { key: 'saved', className: 'dsh-bc-ok', role: 'status', 'data-bc': 'save-saved' },
-            '已保存，需重载 profile。重启 DSH 才更新运行快照，刷新网页不生效。',
-          ),
-        )
-      }
-      if (saveState.kind === 'rejected') {
-        messages.push(
-          h(
-            'p',
-            { key: 'rejected', className: 'dsh-bc-error', role: 'alert', 'data-bc': 'save-rejected' },
-            '宿主拒绝保存（revision 冲突或值被拒绝）。草稿保留且未应用；请重新读取宿主值并对比，不会静默覆盖。',
-          ),
-        )
-      }
-      if (saveState.kind === 'transport') {
-        messages.push(
-          h(
-            'p',
-            { key: 'transport', className: 'dsh-bc-error', role: 'alert', 'data-bc': 'save-transport' },
-            `保存请求失败：${saveState.message}。未保存，草稿已保留。`,
-          ),
-        )
-      }
-      if (saveState.kind === 'invalid' || errors.length > 0) {
-        const list = saveState.kind === 'invalid' && Array.isArray(saveState.errors) ? saveState.errors : errors
-        messages.push(
-          h(
-            'div',
-            { key: 'invalid', className: 'dsh-bc-error', role: 'alert', 'data-bc': 'save-invalid' },
-            h('p', null, '请先修正标记字段：'),
-            h('ul', null, list.map((entry) => h('li', { key: entry }, entry))),
-          ),
-        )
-      }
-      return h(
-        'footer',
-        { className: 'dsh-bc-footer', 'data-bc': 'save-footer' },
-        h(
-          'div',
-          { className: 'dsh-bc-footer-copy' },
-          messages,
-          conflict
-            ? h(
-                'p',
-                { className: 'dsh-bc-error', role: 'alert', 'data-bc': 'revision-conflict' },
-                '宿主配置已更新，当前草稿存在 revision 冲突；请重新读取宿主值并对比，不会覆盖较新配置。',
-              )
-            : null,
-          !writable
-            ? h('p', { className: 'dsh-bc-note', 'data-bc': 'read-only' }, '只读：宿主不接受写入；仍可查看设置与诊断。')
-            : null,
-          h(
-            'p',
-            { className: 'dsh-bc-caption', 'data-bc': 'revision' },
-            `草稿基于 revision ${revision === null || revision ===undefined ? 'unknown' : String(revision)}；每次保存只提交一个预期 revision。`,
-          ),
-        ),
-        h(
-          'div',
-          { className: 'dsh-bc-actions' },
-          h('button', { type: 'button', className: 'dsh-bc-btn', onClick: onReload, disabled: savingNow }, '重新读取宿主值'),
-          h(
-            'button',
-            { type: 'button', className: 'dsh-bc-btn dsh-bc-btn-primary', onClick: onSave, disabled: saveDisabled, 'data-bc': 'save-button' },
-            savingNow ? '保存中…' : '保存设置',
-          ),
-        ),
-      )
+      const saving = props.saving || props.saveState.kind === 'saving'
+      const disabled = props.disabled || saving || props.conflict || !props.writable || !props.dirty || props.errors.length > 0
+      const failure = props.saveState.kind === 'transport' ? '保存失败：' + props.saveState.message + '。草稿已保留。'
+        : props.saveState.kind === 'rejected' ? '宿主拒绝保存，草稿已保留。请重新读取并核对配置。'
+        : props.conflict ? '配置已被其他页面更新，请重新读取后编辑。' : null
+      return h('footer', { className: 'dsh-bc-footer', 'data-bc': 'save-footer' },
+        h('div', { className: 'dsh-bc-footer-copy' },
+          failure ? h('p', { className: 'dsh-bc-error', role: 'alert', 'data-bc': props.conflict ? 'revision-conflict' : props.saveState.kind === 'rejected' ? 'save-rejected' : 'save-transport' }, failure)
+            : h('p', { className: 'dsh-bc-note', role: 'status', 'data-bc': !props.writable ? 'read-only' : props.saveState.kind === 'saved' ? 'save-saved' : 'save-status' },
+              !props.writable ? '只读配置' : props.saveState.kind === 'saved' ? '已保存，重载后生效。' : props.dirty ? '有未保存的更改' : '所有更改已保存'),
+          props.errors.length ? h(Explain, { title: '需修正 ' + props.errors.length + ' 项', open: true },
+            h('ul', { className: 'dsh-bc-reasons' }, props.errors.map((message, index) => h('li', { key: index }, message)))) : null),
+        h('div', { className: 'dsh-bc-actions' },
+          h('button', { type: 'button', className: 'dsh-bc-btn', onClick: props.onReload, disabled: saving || (!props.dirty && !props.conflict) }, props.conflict ? '重新读取' : '放弃修改'),
+          h('button', { type: 'button', className: 'dsh-bc-btn dsh-bc-btn-primary', onClick: props.onSave, disabled, 'data-bc': 'save-button' }, saving ? '保存中…' : '保存设置')))
     }
 
     // ── page ──────────────────────────────────────────────────────────────
@@ -1980,8 +1240,8 @@ window.__ModuleLoader__.load({
               : null
       const inspectLoading =
         selectedId === ''
-          ? pluginInspect.status === 'loading'
-          : sessionInspect.status === 'loading'
+          ? pluginInspect.status === 'loading' || pluginInspect.status === 'refreshing'
+          : sessionInspect.status === 'loading' || sessionInspect.status === 'refreshing'
       const engine = dataPayload !== null && dataPayload !== undefined ? dataPayload.engine ?? null : null
       const engineApplies = engine !== null && engine.inspectApplies === false ? false : null
       const budget = engineApplies === false ? null : dataPayload !== null && dataPayload !== undefined ? dataPayload.budget ?? null : null
@@ -2016,8 +1276,14 @@ window.__ModuleLoader__.load({
       const currentValue = formStatus === 'ready' && state !== undefined && state !== null ? state.value ?? {} : {}
       const currentDraft = draftFromValue(currentValue)
       const dirty = draft !== null && !equalDraft(draft, currentDraft)
-      const baseErrors = draft === null ? [] : validateDraft(draft)
-      const modelErrors = draft === null ? [] : validateModelSelection(draft, routes, modelsReady && modelsEnabled === true)
+      const draftErrors = draft === null ? [] : validateDraft(draft)
+      const projection = draft !== null && draftErrors.length === 0 && engineApplies !== false && inspectError === null && !inspectLoading ? projectDraftBudget(draft, budget) : null
+      const baseErrors = [...draftErrors]
+      if (projection?.error) {
+        const index = projection.policy ? draft.policies.indexOf(projection.policy) : -1
+        baseErrors.push({ field: (index < 0 ? '' : 'policies.' + index + '.') + (projection.pressure <= 0 ? 'headroomTokens' : projection.policy?.retainMode === 'tokens' || (!projection.policy || projection.policy.retainMode === 'inherit') && draft.retainMode === 'tokens' ? 'retainTokens' : 'retainRatio'), message: projection.error })
+      }
+      const modelErrors = draft === null ? [] : validateModelSelection(draft, routes, modelsReady && modelsEnabled === true, budget?.target)
       const errors = [...baseErrors.map((entry) => entry.message), ...modelErrors.map((entry) => entry.message)]
       const fieldError = (field) => {
         const found = [...baseErrors, ...modelErrors].find((entry) => entry.field === field)
@@ -2089,7 +1355,6 @@ window.__ModuleLoader__.load({
         'div',
         { className: 'dsh-bc-page-head', key: 'head' },
         h('h2', { className: 'dsh-bc-title' }, '上下文压缩'),
-        h('p', { className: 'dsh-bc-caption' }, '选择压缩策略并编辑草稿；保存后需重载 profile 生效。'),
       )
 
       if (formStatus === 'missing' || formStatus === 'loading') {
@@ -2128,7 +1393,6 @@ window.__ModuleLoader__.load({
       }
 
       const disabled = !writable || savingNow || formStatus !== 'ready'
-      const activeMode = activeConfig !== null && activeConfig !== undefined && typeof activeConfig.mode === 'string' ? activeConfig.mode : null
       const previewReason =
         preview !== null && preview !== undefined && typeof preview.reason === 'string' && preview.reason.length > 0
           ? preview.reason
@@ -2146,9 +1410,36 @@ window.__ModuleLoader__.load({
         h(ActiveConfigBanner, { activeConfig, requiresReload, dirty }),
         h(ModeCards, {
           value: draft === null ? '' : draft.mode,
-          activeMode,
           disabled,
           onChange: (mode) => updateDraft({ mode }),
+        }),
+        h(BudgetSection, {
+          projection,
+          draftValid: draftErrors.length === 0,
+          engine,
+          draft: draft ?? draftFromValue({}),
+          activeConfig,
+          budget,
+          preview,
+          reasons: budgetReasons,
+          engineApplies,
+          sessionId: selectedId,
+          inspectLoading,
+          inspectError,
+          disabled,
+          fieldError,
+          onDraft: updateDraft,
+          onRetentionMode: (retainMode) => updateDraft({ retainMode }),
+          sessionControl: h(SessionPicker, {
+            entries,
+            selectedId,
+            onSelect: setPickedId,
+            listAvailable: props.sessions !== null && props.sessions !== undefined,
+            phase: sessionList !== null && sessionList !== undefined ? sessionList.phase : 'ready',
+            listError: sessionList !== null && sessionList !== undefined ? sessionList.error : null,
+            refresh: inspectLoading,
+            onRefresh: refresh,
+          }),
         }),
         h(ModelSection, {
           draft: draft ?? draftFromValue({}),
@@ -2164,35 +1455,7 @@ window.__ModuleLoader__.load({
           onProvider: (value) => updateDraft(value === '' ? { provider: '', model: '' } : { provider: value }),
           onModel: (value) => updateDraft(value === '' ? { provider: '', model: '' } : { model: value }),
         }),
-        h(BudgetSection, {
-          stateValue: state.value,
-          draft: draft ?? draftFromValue({}),
-          activeConfig,
-          budget,
-          preview,
-          reasons: budgetReasons,
-          engineApplies,
-          sessionId: selectedId,
-          inspectLoading,
-          inspectError,
-          disabled,
-          fieldError,
-          onDraft: updateDraft,
-          onRetentionMode: (mode) =>
-            updateDraft(mode === 'tokens' ? { retainMode: 'tokens', retainRatio: '' } : { retainMode: 'ratio', retainTokens: '' }),
-          sessionControl: h(SessionPicker, {
-            entries,
-            selectedId,
-            onSelect: setPickedId,
-            listAvailable: props.sessions !== null && props.sessions !== undefined,
-            phase: sessionList !== null && sessionList !== undefined ? sessionList.phase : 'ready',
-            listError: sessionList !== null && sessionList !== undefined ? sessionList.error : null,
-            refresh: inspectLoading,
-            onRefresh: refresh,
-          }),
-        }),
-        h(CacheSection, { draft: draft ?? draftFromValue({}), disabled, onDraft: updateDraft }),
-        h(AdvancedSection, { draft: draft ?? draftFromValue({}), stateValue: state.value ?? {}, disabled, fieldError, onDraft: updateDraft }),
+        h(AdvancedSection, { draft: draft ?? draftFromValue({}), disabled, fieldError, onDraft: updateDraft }),
         h(StatusSection, {
           sessionId: selectedId,
           engine,
@@ -2239,135 +1502,156 @@ window.__ModuleLoader__.load({
     // ── host theme styles ─────────────────────────────────────────────────
 
     const STYLE = `
-.dsh-bc-page{display:flex;flex-direction:column;gap:12px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;min-width:0;container-type:inline-size;container-name:better-compact;overflow-wrap:anywhere}
-.dsh-bc-page-head{display:flex;flex-direction:column;gap:2px}
-.dsh-bc-title{margin:0;font-size:16px;font-weight:600;line-height:24px}
-.dsh-bc-section{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1);padding:14px;display:flex;flex-direction:column;gap:10px;min-width:0}
-.dsh-bc-section-head{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;flex-wrap:wrap}
-.dsh-bc-h3{margin:0;font-size:13.5px;font-weight:600;line-height:20px}
-.dsh-bc-h4{margin:0;font-size:12.5px;font-weight:600;line-height:18px}
-.dsh-bc-h5{margin:0;font-size:12px;font-weight:600;line-height:18px}
-.dsh-bc-caption{margin:0;color:var(--dsw-alias-label-tertiary);font-size:11.5px;line-height:17px}
-.dsh-bc-note{margin:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
-.dsh-bc-unknown{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;border:.5px dashed var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);padding:8px 10px}
-.dsh-bc-hint{margin:2px 0 0;color:var(--dsw-alias-label-secondary);font-size:11.5px}
-.dsh-bc-error{color:var(--dsw-alias-state-error-primary);margin:0;font-size:12px;line-height:18px}
-.dsh-bc-ok{color:var(--dsw-alias-state-success-primary);margin:0;font-size:12px;line-height:18px}
-.dsh-bc-strong{color:var(--dsw-alias-label-primary);font-weight:500}
+.dsh-bc-page{--bc-accent:#3388BB;--bc-accent-ink:color-mix(in srgb,var(--bc-accent) 72%,var(--dsw-alias-label-primary));--bc-accent-soft:color-mix(in srgb,var(--bc-accent) 9%,transparent);--bc-on-accent:#fff;display:flex;flex-direction:column;gap:24px;min-width:0;max-width:960px;color:var(--dsw-alias-label-primary);font-size:13px;line-height:20px;container-type:inline-size;container-name:better-compact;overflow-wrap:anywhere;color-scheme:inherit}
+.dsh-bc-page *{box-sizing:border-box}
+.dsh-bc-page-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.dsh-bc-title{margin:0;font-size:18px;line-height:26px;font-weight:500}
+.dsh-bc-section{display:flex;flex-direction:column;gap:16px;min-width:0;padding:24px 0 0;border-top:1px solid var(--dsw-alias-border-l2)}
+.dsh-bc-section-head,.dsh-bc-subhead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;min-width:0}
+.dsh-bc-h3,.dsh-bc-h4{margin:0;font-size:14px;line-height:20px;font-weight:500}
+.dsh-bc-h4{font-size:13px;line-height:20px}
+.dsh-bc-caption,.dsh-bc-help{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary)}
+.dsh-bc-note{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.dsh-bc-error{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-state-error-primary)}
+.dsh-bc-strong{font-weight:500}
 .dsh-bc-mono{font-variant-numeric:tabular-nums;font-family:var(--dsw-font-mono,ui-monospace,SFMono-Regular,Menlo,monospace)}
-.dsh-bc-modes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.dsh-bc-mode{position:relative;display:flex;flex-direction:column;gap:8px;padding:10px;border:1px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1);cursor:pointer;min-width:0;transition:background-color 120ms ease,border-color 120ms ease}
-.dsh-bc-mode:hover{background:var(--dsw-alias-interactive-bg-hover)}
-.dsh-bc-mode:active{background:var(--dsw-alias-interactive-bg-active)}
-.dsh-bc-mode:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
-.dsh-bc-mode[aria-checked=true]{border-color:var(--dsw-alias-state-business-primary);box-shadow:inset 0 0 0 .5px var(--dsw-alias-state-business-primary);background:var(--dsw-alias-state-business-tertiary)}
-.dsh-bc-mode[aria-disabled=true]{opacity:.62;cursor:not-allowed}
-.dsh-bc-mode-head{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.dsh-bc-mode-title{font-weight:600;font-size:13px}
-.dsh-bc-radio-dot{width:13px;height:13px;border-radius:50%;border:1px solid var(--dsw-alias-border-l4);flex:none;position:relative;display:inline-block}
-.dsh-bc-mode[aria-checked=true] .dsh-bc-radio-dot{border-color:var(--dsw-alias-state-business-primary)}
-.dsh-bc-mode[aria-checked=true] .dsh-bc-radio-dot:after{content:"";position:absolute;inset:2.5px;border-radius:50%;background:var(--dsw-alias-state-business-primary)}
-.dsh-bc-tag{font-size:10px;line-height:16px;padding:0 6px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);color:var(--dsw-alias-label-secondary);white-space:nowrap}
-.dsh-bc-selected-tag{font-size:10px;line-height:16px;color:var(--dsw-alias-label-primary);border:.5px solid var(--dsw-alias-state-business-primary);border-radius:var(--dsw-radius-sm);padding:0 6px;white-space:nowrap}
-.dsh-bc-mode-description{margin:0;color:var(--dsw-alias-label-secondary);font-size:11.5px;line-height:17px;min-height:52px}
-.dsh-bc-mode-pending{margin:0;font-size:11px;line-height:16px;color:var(--dsw-alias-label-primary);border-left:2px solid var(--dsw-alias-state-business-primary);padding-left:6px}
-.dsh-bc-diagram-wrap{min-width:0}
+.dsh-bc-strategies{display:flex;flex-direction:column;gap:12px}
+.dsh-bc-modes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;padding:2px;border-radius:10px;background:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2))}
+.dsh-bc-mode{display:flex;flex-direction:column;gap:8px;min-width:0;padding:0 12px 12px;border:0;border-radius:8px;cursor:pointer;background:transparent;transition:background-color 100ms ease}
+.dsh-bc-mode:hover:not([aria-disabled=true]){background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-bc-mode:active:not([aria-disabled=true]){background:var(--dsw-alias-interactive-bg-active)}
+.dsh-bc-mode[aria-checked=true]{background:var(--dsw-alias-bg-layer-1);box-shadow:inset 0 0 0 .5px var(--dsw-alias-border-l3)}
+.dsh-bc-mode[aria-checked=true]:hover:not([aria-disabled=true]){background:var(--dsw-alias-bg-layer-1)}
+.dsh-bc-mode[aria-disabled=true],.dsh-bc-page :disabled{opacity:.4;cursor:not-allowed}
+.dsh-bc-mode-head{position:relative;display:flex;align-items:center;justify-content:center;gap:6px;min-height:32px}
+.dsh-bc-mode-title{font-size:13px;font-weight:500}
+.dsh-bc-mode-indicator{display:none}
+.dsh-bc-mode[aria-checked=true] .dsh-bc-mode-indicator{display:block;position:absolute;bottom:0;left:0;right:0;height:2px;border-radius:2px;background:var(--bc-accent)}
+.dsh-bc-mode-description{margin:0;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;min-height:36px}
+.dsh-bc-diagram-wrap{min-width:0;margin-top:auto;padding-top:4px}
 .dsh-bc-diagram{display:block;width:100%;max-width:180px;height:auto;margin:0 auto;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-diagram text{fill:currentColor;font-family:inherit;font-size:11px}
-.dsh-bc-diagram .dsh-bc-diagram-note{fill:var(--dsw-alias-label-tertiary);font-size:8px}
-.dsh-bc-diagram .dsh-bc-node{fill:var(--dsw-alias-bg-layer-2);stroke:var(--dsw-alias-border-l3);stroke-width:1}
-.dsh-bc-diagram .dsh-bc-node-strong{fill:var(--dsw-alias-bg-layer-3);stroke:var(--dsw-alias-border-l4);stroke-width:1}
-.dsh-bc-diagram .dsh-bc-node-accent{fill:var(--dsw-alias-state-business-tertiary);stroke:var(--dsw-alias-state-business-primary);stroke-width:1}
-.dsh-bc-diagram .dsh-bc-node-dashed{fill:var(--dsw-alias-bg-layer-2);stroke:var(--dsw-alias-border-l4);stroke-width:1;stroke-dasharray:3 2}
-.dsh-bc-diagram .dsh-bc-edge{stroke:currentColor;stroke-width:1;fill:none}
-.dsh-bc-field{display:flex;flex-direction:column;gap:3px;min-width:0}
-.dsh-bc-label{font-size:12.5px;font-weight:500;line-height:18px}
-.dsh-bc-help{margin:0;color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}
-.dsh-bc-input{box-sizing:border-box;width:100%;height:28px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-3);color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;padding:0 8px;min-width:0}
-.dsh-bc-input:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}
-.dsh-bc-input:disabled{opacity:.6;cursor:not-allowed}
-.dsh-bc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
-.dsh-bc-summary-line{display:flex;flex-wrap:wrap;gap:4px 16px;align-items:baseline}
-.dsh-bc-effort{display:flex;flex-direction:column;gap:4px}
-.dsh-bc-check{display:flex;align-items:flex-start;gap:8px;cursor:pointer}
-.dsh-bc-check input{margin:3px 0 0;accent-color:var(--dsw-alias-state-business-primary);flex:none}
-.dsh-bc-row{display:flex;justify-content:space-between;align-items:flex-start;gap:16px;padding:6px 0;border-top:.5px solid var(--dsw-alias-border-l2)}
-.dsh-bc-row:first-child{border-top:0}
-.dsh-bc-row-label{display:flex;flex-direction:column;gap:0;min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
-.dsh-bc-row-value{text-align:right;color:var(--dsw-alias-label-primary);font-size:12px;line-height:18px;overflow-wrap:anywhere}
-.dsh-bc-budget-facts{display:flex;flex-direction:column}
-.dsh-bc-bar-block{display:flex;flex-direction:column;gap:6px}
-.dsh-bc-bar{position:relative;width:100%;height:22px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-3);overflow:hidden}
-.dsh-bc-bar-track{display:flex;height:100%;width:100%}
-.dsh-bc-bar-seg{height:100%;border-right:.5px solid var(--dsw-alias-border-l1);min-width:0}
-.dsh-bc-bar-seg:last-child{border-right:0}
-.dsh-bc-seg-fixed{background:var(--dsw-alias-label-caption);opacity:.55}
-.dsh-bc-seg-history{background:var(--dsw-alias-state-business-primary);opacity:.38}
-.dsh-bc-seg-tail{background:var(--dsw-alias-state-business-primary);opacity:.85}
-.dsh-bc-seg-summary{background:repeating-linear-gradient(135deg,var(--dsw-alias-state-business-primary) 0 3px,transparent 3px 6px);opacity:.9}
+.dsh-bc-diagram text{fill:currentColor;font-family:inherit;font-size:12px}
+.dsh-bc-node{fill:var(--dsw-alias-bg-layer-3);stroke:var(--dsw-alias-border-l2);stroke-width:1}
+.dsh-bc-node-strong{fill:var(--dsw-alias-bg-layer-2);stroke:var(--dsw-alias-border-l3)}
+.dsh-bc-node-accent{fill:var(--dsw-alias-bg-layer-2);stroke:color-mix(in srgb,var(--bc-accent) 55%,var(--dsw-alias-border-l2))}
+.dsh-bc-node-dashed{stroke-dasharray:3 3}
+.dsh-bc-edge{stroke:currentColor;stroke-width:1;fill:none;opacity:.65}
+.dsh-bc-strategy-foot{display:flex;justify-content:flex-end}
+.dsh-bc-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 24px;align-items:start}
+.dsh-bc-field{display:flex;flex-direction:column;gap:4px;min-width:0}
+.dsh-bc-label{font-size:12px;font-weight:400;line-height:18px;color:var(--dsw-alias-label-secondary)}
+.dsh-bc-input,.dsh-bc-btn{height:32px;min-width:0;border:.5px solid var(--dsw-alias-border-l3);border-radius:6px;background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font:inherit;font-size:13px;line-height:20px}
+.dsh-bc-input{width:100%;padding:0 12px;transition:border-color 100ms ease}
+.dsh-bc-input:hover:not(:disabled){border-color:var(--dsw-alias-border-l4)}
+.dsh-bc-input:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}
+.dsh-bc-input[aria-invalid=true]{border-color:var(--dsw-alias-state-error-primary)}
+.dsh-bc-number{position:relative;min-width:0}
+.dsh-bc-number .dsh-bc-input{padding-right:72px}
+.dsh-bc-unit{position:absolute;right:28px;top:7px;pointer-events:none;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px}
+.dsh-bc-check{display:flex;align-items:center;gap:8px;min-height:32px;cursor:pointer}
+.dsh-bc-check input{margin:0;flex:none;width:16px;height:16px;accent-color:var(--bc-accent)}
+.dsh-bc-check:has(:disabled){cursor:not-allowed}
+.dsh-bc-check:hover:has(:not(:disabled)) .dsh-bc-label{color:var(--bc-accent-ink)}
+.dsh-bc-row{display:flex;align-items:baseline;justify-content:space-between;gap:12px;padding:8px 0;border-bottom:1px solid var(--dsw-alias-border-l2)}
+.dsh-bc-row-label{min-width:0;color:var(--dsw-alias-label-secondary);font-size:12px}
+.dsh-bc-row-value{min-width:0;text-align:right;font-size:12px;overflow-wrap:anywhere}
+.dsh-bc-snapshot{display:flex;flex-direction:column;gap:12px;padding:12px;background:var(--dsw-alias-bg-layer-2);border:.5px solid var(--dsw-alias-border-l2);border-radius:8px;min-width:0}
+.dsh-bc-metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.dsh-bc-metric{display:flex;flex-direction:column;gap:4px;min-width:0}
+.dsh-bc-metric-value{font-size:14px;line-height:20px;font-weight:500}
+.dsh-bc-metric-primary .dsh-bc-metric-value{color:var(--dsw-alias-label-primary)}
+.dsh-bc-budget-editor{display:flex;flex-direction:column;gap:16px;min-width:0;padding-top:8px}
+.dsh-bc-threshold{display:flex;flex-direction:column;gap:8px;min-width:0}
+.dsh-bc-threshold>.dsh-bc-field{display:grid;grid-template-columns:minmax(0,1fr) 104px;align-items:center}
+.dsh-bc-threshold .dsh-bc-error{grid-column:1 / -1}
+.dsh-bc-threshold .dsh-bc-number .dsh-bc-input{padding-left:8px;padding-right:40px}
+.dsh-bc-threshold .dsh-bc-unit{right:24px}
+.dsh-bc-range{appearance:none;display:block;width:100%;height:6px;margin:8px 0 0;border-radius:6px;background:linear-gradient(to right,var(--bc-accent) var(--bc-range-progress,50%),var(--dsw-alias-border-l3) var(--bc-range-progress,50%));cursor:pointer;accent-color:var(--bc-accent)}
+.dsh-bc-range::-webkit-slider-thumb{appearance:none;width:16px;height:16px;border-radius:50%;background:var(--dsw-alias-bg-layer-3);border:2px solid var(--bc-accent);transition:background-color 100ms ease}
+.dsh-bc-range::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-bg-layer-3);border:2px solid var(--bc-accent)}
+.dsh-bc-range:hover:not(:disabled)::-webkit-slider-thumb{background:var(--bc-accent-soft)}
+.dsh-bc-range:active:not(:disabled)::-webkit-slider-thumb{background:var(--bc-accent)}
+.dsh-bc-range-ticks{display:flex;justify-content:space-between;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-variant-numeric:tabular-nums}
+.dsh-bc-draft-allocation{display:flex;flex-direction:column;gap:12px;min-width:0}
+.dsh-bc-draft-allocation>.dsh-bc-subhead .dsh-bc-metric:last-child{align-items:flex-end}
+.dsh-bc-draft-allocation>.dsh-bc-subhead .dsh-bc-metric:last-child .dsh-bc-metric-value{font-size:13px;line-height:20px}
+.dsh-bc-retention,.dsh-bc-composition{display:flex;flex-direction:column;gap:16px;padding-top:24px;border-top:1px solid var(--dsw-alias-border-l2);min-width:0}
+.dsh-bc-bar-wrap{display:flex;flex-direction:column;gap:8px;min-width:0}
+.dsh-bc-bar{position:relative;min-width:0;height:16px;border:1px solid var(--dsw-alias-border-l2);border-radius:4px;overflow:hidden;background:var(--dsw-alias-bg-layer-3)}
+.dsh-bc-bar-track{display:flex;width:100%;height:100%}
+.dsh-bc-bar-seg{flex:none;height:100%;border-right:1px solid var(--dsw-alias-border-l2)}
+.dsh-bc-seg-fixed,.dsh-bc-swatch-fixed{background:color-mix(in srgb,var(--dsw-alias-label-tertiary) 60%,transparent)}
+.dsh-bc-seg-history,.dsh-bc-swatch-history{background:color-mix(in srgb,var(--bc-accent) 35%,transparent)}
+.dsh-bc-seg-tail,.dsh-bc-swatch-tail{background:var(--bc-accent)}
+.dsh-bc-seg-summary,.dsh-bc-swatch-summary{background:repeating-linear-gradient(135deg,var(--bc-accent) 0 2px,transparent 2px 5px)}
+.dsh-bc-seg-headroom,.dsh-bc-swatch-headroom{background:repeating-linear-gradient(135deg,var(--dsw-alias-label-tertiary) 0 1px,transparent 1px 4px);opacity:.5}
 .dsh-bc-seg-free{background:transparent}
-.dsh-bc-reserve-zone{position:absolute;top:0;bottom:0;pointer-events:none;background:repeating-linear-gradient(135deg,var(--dsw-alias-border-l3) 0 2px,transparent 2px 5px);opacity:.6;border-left:.5px dashed var(--dsw-alias-border-l3)}
-.dsh-bc-trigger{position:absolute;top:0;bottom:0;border-left:2px solid var(--dsw-alias-label-primary);pointer-events:none}
-.dsh-bc-current-line{position:absolute;top:0;bottom:0;border-left:1px dashed var(--dsw-alias-label-secondary);pointer-events:none}
-.dsh-bc-legend{display:flex;flex-wrap:wrap;gap:3px 14px;margin:0;padding:0;list-style:none;font-size:11px;line-height:16px;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-legend li{display:inline-flex;align-items:center;gap:5px}
-.dsh-bc-swatch{display:inline-block;width:10px;height:10px;border-radius:2px;border:.5px solid var(--dsw-alias-border-l3);flex:none}
-.dsh-bc-swatch-fixed{background:var(--dsw-alias-label-caption);opacity:.6}
-.dsh-bc-swatch-history{background:var(--dsw-alias-state-business-primary);opacity:.45}
-.dsh-bc-swatch-tail{background:var(--dsw-alias-state-business-primary)}
-.dsh-bc-swatch-summary{background:repeating-linear-gradient(135deg,var(--dsw-alias-state-business-primary) 0 3px,transparent 3px 6px)}
-.dsh-bc-swatch-reserve{background:repeating-linear-gradient(135deg,var(--dsw-alias-border-l3) 0 2px,transparent 2px 5px)}
-.dsh-bc-retention{display:flex;flex-direction:column;gap:7px;border-top:.5px solid var(--dsw-alias-border-l2);padding-top:10px}
-.dsh-bc-retention-forms{display:flex;flex-wrap:wrap;gap:6px 18px}
-.dsh-bc-retention-option{display:inline-flex;align-items:center;gap:6px;font-size:12px;cursor:pointer}
-.dsh-bc-retention-option input{accent-color:var(--dsw-alias-state-business-primary);margin:0}
-.dsh-bc-preview{display:flex;flex-direction:column;gap:7px;border-top:.5px solid var(--dsw-alias-border-l2);padding-top:10px}
-.dsh-bc-composition{display:flex;flex-direction:column;gap:6px;border-top:.5px dashed var(--dsw-alias-border-l2);padding-top:8px}
-.dsh-bc-reasons{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-bullets{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:3px;font-size:11.5px;line-height:17px;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-candidates{display:flex;flex-direction:column;gap:6px}
-.dsh-bc-candidate-details{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-sm);padding:6px 8px}
-.dsh-bc-candidate-details>summary{cursor:pointer;font-size:12px;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-candidate-list,.dsh-bc-policy-list{margin:6px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:3px;font-size:11.5px;line-height:17px}
-.dsh-bc-details{border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1);padding:0;min-width:0}
-.dsh-bc-details>summary{cursor:pointer;padding:11px 14px;font-weight:600;font-size:13px}
-.dsh-bc-details[open]>summary{border-bottom:.5px solid var(--dsw-alias-border-l2)}
-.dsh-bc-details-body{display:flex;flex-direction:column;gap:10px;padding:12px 14px}
-.dsh-bc-policies{display:flex;flex-direction:column;gap:4px;border-top:.5px solid var(--dsw-alias-border-l2);padding-top:9px}
-.dsh-bc-status-record{display:flex;flex-direction:column;gap:6px}
-.dsh-bc-status-line{display:inline-flex;align-self:flex-start;margin:0;padding:1px 8px;border:.5px solid var(--dsw-alias-border-l3);border-radius:var(--dsw-radius-sm);font-size:12px;font-weight:500;line-height:18px;background:var(--dsw-alias-bg-layer-2)}
-.dsh-bc-status-completed{color:var(--dsw-alias-state-success-secondary)}
-.dsh-bc-status-failed,.dsh-bc-status-persistence-error{color:var(--dsw-alias-state-error-primary);border-color:var(--dsw-alias-state-error-primary)}
-.dsh-bc-status-cancelled,.dsh-bc-status-running{color:var(--dsw-alias-label-secondary)}
-.dsh-bc-status-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:2px 18px}
-.dsh-bc-status-grid .dsh-bc-row{padding:4px 0}
-.dsh-bc-continuation,.dsh-bc-diagnostics{display:flex;flex-direction:column;gap:5px;border-top:.5px solid var(--dsw-alias-border-l2);padding-top:9px}
-.dsh-bc-session{display:flex;flex-direction:column;gap:6px;min-width:0}
-.dsh-bc-session-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;min-width:0}
-.dsh-bc-session-row .dsh-bc-input{width:auto;min-width:min(260px,100%);max-width:100%;flex:1 1 240px}
-.dsh-bc-session-actions{display:flex;gap:6px;flex-wrap:wrap}
-.dsh-bc-btn{box-sizing:border-box;height:28px;border:.5px solid var(--dsw-alias-border-l4);border-radius:var(--dsw-radius-md);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;font-size:12.5px;line-height:18px;padding:0 12px;cursor:pointer;white-space:nowrap}
+.dsh-bc-trigger,.dsh-bc-current-line{position:absolute;top:0;bottom:0;pointer-events:none;max-width:100%;transform:translateX(-1px);border-left:2px solid var(--dsw-alias-label-primary)}
+.dsh-bc-current-line{border-left:1px dashed var(--dsw-alias-label-primary)}
+.dsh-bc-bar-ticks{display:flex;justify-content:space-between;color:var(--dsw-alias-label-tertiary);font-size:12px;line-height:18px;font-variant-numeric:tabular-nums}
+.dsh-bc-bar-ticks span{position:relative;flex:1;text-align:center}
+.dsh-bc-bar-ticks span:first-child{text-align:left;flex:.5}
+.dsh-bc-bar-ticks span:last-child{text-align:right;flex:.5}
+.dsh-bc-marker-legend{display:flex;flex-wrap:wrap;gap:16px;font-size:12px;color:var(--dsw-alias-label-secondary)}
+.dsh-bc-marker-legend span{display:flex;align-items:center;gap:8px}
+.dsh-bc-key-trigger,.dsh-bc-key-current{display:inline-block;height:12px;border-left:2px solid var(--dsw-alias-label-primary)}
+.dsh-bc-key-current{border-left:1px dashed var(--dsw-alias-label-primary)}
+.dsh-bc-legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:0;padding:0;list-style:none;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.dsh-bc-legend li{display:flex;align-items:center;gap:8px}
+.dsh-bc-swatch{display:block;width:12px;height:12px;flex:none;border:1px solid var(--dsw-alias-border-l2);border-radius:2px}
+.dsh-bc-retain-choice{min-width:0;padding:0;margin:0;border:0;display:flex;flex-direction:column;gap:8px}
+.dsh-bc-retain-choice legend{padding:0;margin-bottom:8px}
+.dsh-bc-segmented{display:flex;border:0;border-radius:10px;min-height:32px;padding:2px;gap:2px;background:var(--dsw-alias-bg-layer-2)}
+.dsh-bc-segment{position:relative;display:flex;align-items:center;justify-content:center;flex:1;min-width:0;min-height:28px;border-radius:8px;padding:4px 8px;color:var(--dsw-alias-label-secondary);font-size:13px;cursor:pointer;transition:background-color 100ms ease}
+.dsh-bc-segment input{position:absolute;opacity:0;width:1px;height:1px;margin:0}
+.dsh-bc-segment[data-checked=true]{background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);font-weight:500;box-shadow:inset 0 0 0 .5px var(--dsw-alias-border-l3)}
+.dsh-bc-segment:hover:not(:has(:disabled)){background:var(--dsw-alias-interactive-bg-hover)}
+.dsh-bc-segment:active:not(:has(:disabled)){background:var(--dsw-alias-interactive-bg-active)}
+.dsh-bc-segment:has(:disabled){opacity:.4;cursor:not-allowed}
+.dsh-bc-retention-result{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:24px;min-width:0}
+.dsh-bc-retention-result>.dsh-bc-metric{align-items:flex-end}
+.dsh-bc-retention-flow{display:grid;grid-template-columns:1fr 1fr;min-width:0;border:1px solid var(--dsw-alias-border-l2);border-radius:6px;overflow:hidden}
+.dsh-bc-flow-older,.dsh-bc-flow-tail{display:flex;flex-direction:column;gap:4px;padding:12px;font-size:13px}
+.dsh-bc-flow-summary{display:flex;justify-content:space-between;color:var(--dsw-alias-label-secondary)}
+.dsh-bc-flow-tail{border-left:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary)}
+.dsh-bc-explanation{min-width:0;font-size:12px;line-height:18px}
+.dsh-bc-explanation>summary{cursor:pointer;color:var(--dsw-alias-label-secondary);width:fit-content;padding:4px 0;border-radius:4px}
+.dsh-bc-explanation>summary:hover{color:var(--dsw-alias-label-primary)}
+.dsh-bc-explanation>summary:active{background:var(--dsw-alias-interactive-bg-active)}
+.dsh-bc-explanation-body{display:flex;flex-direction:column;gap:8px;padding-top:12px;min-width:0}
+.dsh-bc-details{min-width:0;border-top:1px solid var(--dsw-alias-border-l2)}
+.dsh-bc-details>summary{cursor:pointer;padding:24px 0 8px;font-size:14px;line-height:20px;font-weight:500}
+.dsh-bc-details>summary:hover{color:var(--bc-accent-ink)}
+.dsh-bc-details-body,.dsh-bc-policy-body{display:flex;flex-direction:column;gap:16px;padding:16px 0 0;min-width:0}
+.dsh-bc-policy{min-width:0;border-top:1px solid var(--dsw-alias-border-l2)}
+.dsh-bc-policy>summary{padding:8px 0;cursor:pointer;font-size:13px;overflow-wrap:anywhere}
+.dsh-bc-policy-body{padding:8px 0 16px}
+.dsh-bc-status-record{display:flex;flex-direction:column;gap:12px}
+.dsh-bc-status-line{margin:0;font-size:13px;font-weight:500}
+.dsh-bc-status-failed,.dsh-bc-status-persistence-error{color:var(--dsw-alias-state-error-primary)}
+.dsh-bc-status-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 24px}
+.dsh-bc-continuation{display:flex;flex-direction:column;gap:8px}
+.dsh-bc-reasons,.dsh-bc-bullets{margin:0;padding-left:16px;display:flex;flex-direction:column;gap:8px;color:var(--dsw-alias-label-secondary);font-size:12px;line-height:18px}
+.dsh-bc-session{display:flex;align-items:center;gap:8px;min-width:0;max-width:100%;flex:0 1 320px}
+.dsh-bc-session select{flex:1;width:0;font-size:12px}
+.dsh-bc-btn{padding:0 12px;white-space:nowrap;cursor:pointer;transition:background-color 100ms ease}
 .dsh-bc-btn:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover)}
 .dsh-bc-btn:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active)}
-.dsh-bc-btn:focus-visible{outline:var(--dsw-focus-ring-width,2px) solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:1px}
-.dsh-bc-btn:disabled{opacity:.5;cursor:not-allowed}
-.dsh-bc-btn-primary{background:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-primary-foreground);border-color:transparent}
-.dsh-bc-btn-primary:hover:not(:disabled){background:var(--dsw-alias-state-business-primary)}
-.dsh-bc-footer{position:static;display:flex;justify-content:space-between;align-items:flex-start;gap:16px;flex-wrap:wrap;border:.5px solid var(--dsw-alias-border-l2);border-radius:var(--dsw-radius-lg);background:var(--dsw-alias-bg-layer-1);padding:12px 14px}
-.dsh-bc-footer-copy{display:flex;flex-direction:column;gap:5px;min-width:0;flex:1 1 280px}
-.dsh-bc-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.dsh-bc-banner{display:flex;flex-direction:column;gap:4px;border-left:2px solid var(--dsw-alias-state-business-primary);border-radius:var(--dsw-radius-sm);background:var(--dsw-alias-bg-layer-2);padding:8px 10px}
-.dsh-bc-banner-warn{border-left-color:var(--dsw-alias-state-warn-primary);background:var(--dsw-alias-state-warn-tertiary)}
-.dsh-bc-banner-title{margin:0;font-size:12px;line-height:18px;font-weight:500}
-.dsh-bc-strategy-foot{display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap;margin-top:8px}
-.dsh-bc-explanation{min-width:0;font-size:12px;line-height:18px}
-.dsh-bc-explanation>summary{cursor:pointer;color:var(--dsw-alias-label-secondary)}
-.dsh-bc-explanation[open]>summary{margin-bottom:6px}
-.dsh-bc-explanation>summary:focus-visible{outline:2px solid var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary));outline-offset:2px}
-.dsh-bc-explanation .dsh-bc-caption+.dsh-bc-caption{margin-top:4px}
-@container better-compact (max-width:634px){.dsh-bc-modes{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.dsh-bc-mode{padding:8px;gap:6px}.dsh-bc-mode-title{font-size:12px}.dsh-bc-mode-description{font-size:11px;line-height:15px;min-height:45px}.dsh-bc-diagram{max-width:180px}.dsh-bc-grid,.dsh-bc-status-grid{grid-template-columns:1fr}}
-@container better-compact (max-width:560px){.dsh-bc-modes{grid-template-columns:1fr}.dsh-bc-mode-description{min-height:0}.dsh-bc-section{padding:12px}.dsh-bc-row{gap:8px}.dsh-bc-row-label,.dsh-bc-row-value{flex:1;min-width:0}.dsh-bc-session-row .dsh-bc-input{flex-basis:100%}}
-@media (prefers-reduced-motion:reduce){.dsh-bc-page *{transition:none!important;animation:none!important}.dsh-bc-mode:active{background:var(--dsw-alias-bg-layer-1)}}
+.dsh-bc-btn-remove:hover:not(:disabled){color:var(--dsw-alias-state-error-primary)}
+.dsh-bc-btn-primary{background:color-mix(in srgb,var(--bc-accent) 85%,black);border-color:transparent;color:var(--bc-on-accent)}
+.dsh-bc-btn-primary:hover:not(:disabled){background:color-mix(in srgb,var(--bc-accent) 72%,black)}
+.dsh-bc-btn-primary:active:not(:disabled){background:color-mix(in srgb,var(--bc-accent) 72%,black)}
+.dsh-bc-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:16px 0 0;border-top:1px solid var(--dsw-alias-border-l2)}
+.dsh-bc-footer-copy{min-width:0;flex:1;display:flex;flex-direction:column;gap:8px}
+.dsh-bc-actions{display:flex;justify-content:flex-end;gap:8px;margin-left:auto}
+.dsh-bc-banner{display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--dsw-alias-label-secondary);font-size:12px}
+.dsh-bc-banner-title{font-size:12px;font-weight:400}
+.dsh-bc-sr-only{position:absolute;width:1px;height:1px;padding:0;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
+.dsh-bc-page :is(button,input,select,summary,[role=radio]):focus{outline:none}
+.dsh-bc-page :is(button,input,select,summary,[role=radio]):focus-visible,.dsh-bc-segment:has(input:focus-visible){outline:var(--dsw-focus-ring-width,2px) solid var(--bc-accent);outline-offset:2px}
+@container better-compact (max-width:560px){.dsh-bc-grid,.dsh-bc-status-grid{grid-template-columns:1fr}.dsh-bc-metrics{gap:8px}.dsh-bc-modes{grid-template-columns:1fr}.dsh-bc-mode{display:grid;grid-template-columns:minmax(0,1fr) minmax(140px,180px);align-items:center;gap:8px 16px;padding:8px 12px}.dsh-bc-mode-head,.dsh-bc-mode-description{grid-column:1}.dsh-bc-mode-head{justify-content:flex-start;align-self:end}.dsh-bc-mode-description{min-height:0;align-self:start}.dsh-bc-diagram-wrap{grid-column:2;grid-row:1 / span 2;margin:0;padding:0}.dsh-bc-section-head{align-items:stretch;flex-direction:column}.dsh-bc-session{flex:auto}.dsh-bc-retention-result{grid-template-columns:1fr;gap:12px}.dsh-bc-retention-result>.dsh-bc-metric{flex-direction:row;align-items:baseline;justify-content:space-between}.dsh-bc-footer-copy{flex-basis:100%}.dsh-bc-actions{margin-left:auto}.dsh-bc-range{height:32px;margin:0;background:linear-gradient(to right,var(--bc-accent) var(--bc-range-progress,50%),var(--dsw-alias-border-l3) var(--bc-range-progress,50%)) center / 100% 6px no-repeat}.dsh-bc-explanation>summary,.dsh-bc-policy>summary{min-height:32px;display:flex;align-items:center}}
+@container better-compact (max-width:360px){.dsh-bc-metrics{grid-template-columns:1fr}.dsh-bc-metrics .dsh-bc-metric{flex-direction:row;align-items:baseline;justify-content:space-between}.dsh-bc-bar-ticks span:nth-child(even){visibility:hidden}.dsh-bc-draft-allocation>.dsh-bc-subhead{align-items:stretch;flex-direction:column}.dsh-bc-draft-allocation>.dsh-bc-subhead .dsh-bc-metric{align-items:baseline;flex-direction:row;justify-content:space-between}.dsh-bc-threshold>.dsh-bc-field{grid-template-columns:minmax(0,1fr) 96px}}
+@media (prefers-reduced-motion:reduce){.dsh-bc-page *{transition:none!important;animation:none!important}}
 `
 
     /** Services this client half consumes. */

@@ -72,7 +72,13 @@ function pluginPayload(overrides = {}) {
 
 function measuredBudget(overrides = {}) {
   return {
+    target: { provider: 'p', model: 'm' },
     contextWindow: 200000,
+    reservedCompletionTokens: 8000,
+    messageBudgetTokens: 192000,
+    headroomTokens: 32000,
+    pressureBudgetTokens: 160000,
+    ratioThresholdTokens: 160000,
     currentTokens: 142000,
     measurement: 'measured',
     fixedTokens: 12000,
@@ -93,7 +99,10 @@ function sessionPayload(overrides = {}) {
     budget: measuredBudget(),
     preview: {
       beforeTokens: 142000,
-      afterUpperBoundTokens: 50000,
+      afterUpperBoundTokens: 50098,
+      retainedTokens: 30000,
+      replacedTokens: 100000,
+      checkpointFramingTokens: 98,
       rangeStart: 2,
       rangeEnd: 9,
       reason: null,
@@ -267,7 +276,8 @@ async function click(tree, node) {
 
 async function change(tree, node, value) {
   await act(async () => {
-    node.props.onChange({ target: { value } })
+    const displayValue = node.props.type === 'number' && node.props.name.endsWith('Ratio') && value !== '' ? String(Number(value) * 100) : value
+    node.props.onChange({ target: { value: displayValue } })
   })
 }
 
@@ -321,24 +331,23 @@ test('strategy arrows touch their actual source and destination boxes', async ()
   await unmount(tree)
 })
 
-test('inherited retention identifies the active source without promising a new default', async () => {
+test('inherited retention uses the schema default and distinguishes the running snapshot', async () => {
   const { tree, calls, mutateCalls } = await renderPage({
     handler: router({ plugin: pluginPayload({ requiresReload: true, activeConfig: activeConfig({ retainRatio: 0.23 }) }) }),
   })
   const input = byName(tree, 'retainRatio')
   assert.equal(input.props.value, '')
-  assert.equal(input.props.placeholder, '0.23')
-  const hint = byData(tree, 'retention-source')[0]
-  assert.ok(hint, 'an empty inherited value must have a visible source')
-  assert.match(hint.children.join(''), /23%.*activeConfig/)
-  assert.match(hint.children.join(''), /重载.*重新解析/)
+  assert.equal(input.props.placeholder, '16')
+  assert.match(visibleText(tree), /留空使用 16%/)
+  assert.match(visibleText(tree), /23%/, 'the existing running snapshot remains separately visible')
   await change(tree, input, '0.19')
-  assert.match(byData(tree, 'retention-source')[0].children.join(''), /草稿.*19%/)
+  assert.equal(byName(tree, 'retainRatio').props.value, '19')
   assert.equal(mutateCalls.length, 0)
   assert.equal(calls.length, 2, 'draft edits do not fetch or invoke an LLM')
   await unmount(tree)
   const unknown = await renderPage({ handler: router({ plugin: pluginPayload({ activeConfig: null }) }) })
-  assert.match(byData(unknown.tree, 'retention-source')[0].children.join(''), /unknown.*未返回/)
+  assert.match(visibleText(unknown.tree), /运行状态未知/)
+  assert.equal(byName(unknown.tree, 'retainRatio').props.placeholder, '16', 'the default comes from the inspected schema, independent of the runtime snapshot')
   await unmount(unknown.tree)
 })
 
@@ -349,7 +358,7 @@ test('model picker changes provider/model atomically and preserves incompatible 
   })
   const picker = byName(tree, 'summaryRoute')
   assert.equal(picker.type, 'select')
-  const choice = picker.findAllByType('option').find((n) => n.children.join('') === 'p / m')
+  const choice = picker.findAllByType('option').find((n) => n.children.join('') === 'p/m')
   assert.ok(choice)
   await change(tree, picker, choice.props.value)
   assert.equal(byName(tree, 'summarizationProvider').props.value, 'p')
@@ -426,7 +435,7 @@ test('summary slot renders the stable one-line description', async () => {
   await act(async () => {
     tree = TestRenderer.create(h(exports.BetterCompactConfigEntry, { view: 'summary' }))
   })
-  assert.match(json(tree), /原生 \/ Goal 增强 \/ 文件 Handoff/)
+  assert.match(json(tree), /压缩策略、上下文预算与会话诊断/)
   await unmount(tree)
 })
 
@@ -439,7 +448,7 @@ test('page renders in overview order with three distinct strategy diagrams', asy
     if (props['data-bc'] === 'advanced') markers.push('advanced')
     if (props['data-bc-section'] !== undefined) markers.push(props['data-bc-section'])
   }
-  assert.deepEqual(markers, ['modes', 'model', 'budget', 'cache', 'advanced', 'status'])
+  assert.deepEqual(markers, ['modes', 'budget', 'model', 'advanced', 'status'])
 
   const diagrams = hostNodes(tree, (props) => typeof props['data-diagram'] === 'string')
   assert.deepEqual(
@@ -460,7 +469,7 @@ test('page renders in overview order with three distinct strategy diagrams', asy
   assert.match(handoffLabel, /正文写入原生事件/)
   assert.match(handoffLabel, /同会话继续/)
   assert.match(handoffLabel, /近期原文保留/)
-  assert.match(json(tree), /策略示意，非实时 token 流或缓存命中率/)
+  assert.equal(hostNodes(tree, (props, node) => node.type === 'svg').length, 3, 'strategy diagrams remain schematic SVGs')
   assert.deepEqual(
     calls.map((call) => call.url).sort(),
     ['/better-compact/api/inspect', '/better-compact/api/models'],
@@ -505,6 +514,29 @@ test('mode cards use radio semantics, keyboard selection and a disabled state', 
   await unmount(disabled.tree)
 })
 
+test('mode details stay closed, options carry no badges, Home/End wrap the group', async () => {
+  const { tree } = await renderPage()
+  const details = byData(tree, 'mode-details')[0]
+  assert.ok(details)
+  assert.equal(details.props.open, undefined, 'mode explanations start collapsed')
+  assert.equal(hostNodes(tree, (props) => props['data-bc-selected-tag'] !== undefined).length, 0)
+  assert.equal(hostNodes(tree, (props) => props.className === 'dsh-bc-tag').length, 0)
+  // Every selectable card includes its diagram without opening the details.
+  assert.equal(hostNodes(tree, (props, node) => node.type === 'svg').length, 3)
+
+  const radios = hostNodes(tree, (props) => props.role === 'radio')
+  const goal = radios.find((node) => node.props['data-mode'] === 'goal')
+  const handoff = radios.find((node) => node.props['data-mode'] === 'handoff')
+  const native = radios.find((node) => node.props['data-mode'] === 'native')
+  await act(async () => { goal.props.onKeyDown({ key: 'End', preventDefault() {} }) })
+  assert.equal(hostNodes(tree, (props) => props.role === 'radio' && props['data-mode'] === 'handoff')[0].props['aria-checked'], true)
+  await act(async () => { handoff.props.onKeyDown({ key: 'Home', preventDefault() {} }) })
+  assert.equal(hostNodes(tree, (props) => props.role === 'radio' && props['data-mode'] === 'native')[0].props['aria-checked'], true)
+  await act(async () => { native.props.onKeyDown({ key: 'ArrowLeft', preventDefault() {} }) })
+  assert.equal(hostNodes(tree, (props) => props.role === 'radio' && props['data-mode'] === 'handoff')[0].props['aria-checked'], true)
+  await unmount(tree)
+})
+
 test('selected mode differing from the active snapshot is flagged for a profile reload', async () => {
   const { tree } = await renderPage({
     handler: router({
@@ -515,12 +547,11 @@ test('selected mode differing from the active snapshot is flagged for a profile 
     tree,
     (props) => props.role === 'radio' && props['data-mode'] === 'goal',
   )[0]
-  const pending = hostNodes(tree, (props, node) => node.props['data-bc-mode-pending'] === 'true')
-  assert.equal(pending.length, 1)
-  assert.match(json(tree), /保存后重载 profile 生效/)
-  assert.equal(goalCard.props['aria-checked'], true)
-  assert.match(json(tree), /已保存配置待重载 profile/)
   const banner = byData(tree, 'active-config')[0]
+  assert.ok(banner, 'the runtime/saved distinction stays visible in the shared banner')
+  assert.match(visibleText(tree), /已保存，待重载/)
+  assert.equal(goalCard.props['aria-checked'], true)
+  assert.match(visibleText(tree), /保存后需重启 DSH 或重载配置档/)
   assert.equal(banner.props['data-requires-reload'], 'true')
   await unmount(tree)
 })
@@ -542,8 +573,8 @@ test('native mode disables enhanced effort and cache controls but keeps saved va
   assert.equal(effort.props.value, 'ultra')
   assert.equal(cache.props.disabled, true)
   assert.equal(cache.props.checked, true)
-  assert.match(json(tree), /不适用：由原生实现决定/)
-  assert.match(json(tree), /保留当前值供切回增强模式/)
+  assert.match(json(tree), /由原生引擎决定/)
+  assert.equal(cache.props.checked, true, 'native mode preserves the enhanced preference')
   assert.equal(byName(tree, 'summarizationProvider').props.disabled, false)
   assert.equal(hostNodes(tree, (props) => props['data-bc-error'] === 'reasoningEffort').length, 0)
 
@@ -553,7 +584,7 @@ test('native mode disables enhanced effort and cache controls but keeps saved va
   assert.equal(byName(tree, 'reasoningEffort').props.value, 'ultra')
   assert.equal(byName(tree, 'cachePriority').props.disabled, false)
   assert.equal(hostNodes(tree, (props) => props['data-bc-error'] === 'reasoningEffort').length, 1)
-  assert.match(json(tree), /模型 p\/m 未声明支持思考强度/)
+  assert.match(json(tree), /p\/m 未声明支持强度/)
   await unmount(tree)
 })
 
@@ -564,8 +595,8 @@ test('saved model and effort values stay visible and are marked when outside cap
   })
   assert.equal(byName(legacy.tree, 'summarizationProvider').props.value, 'legacy')
   assert.equal(byName(legacy.tree, 'summarizationModel').props.value, 'retired')
-  assert.match(json(legacy.tree), /不在宿主候选列表中/)
-  assert.match(json(legacy.tree), /当前值已保留/)
+  assert.match(json(legacy.tree), /未列于宿主候选中/)
+  assert.equal(byName(legacy.tree, 'summaryRoute').props.value, 'custom')
   assert.ok(byData(legacy.tree, 'route-warning')[0])
   await change(legacy.tree, byName(legacy.tree, 'thresholdRatio'), '0.7')
   await clickButton(legacy.tree, '保存设置')
@@ -584,8 +615,8 @@ test('saved model and effort values stay visible and are marked when outside cap
     (props) => props.value === 'ultra',
   )[0]
   assert.ok(savedOption)
-  assert.match(json(effort.tree), /模型 p\/m 未声明支持思考强度/)
-  assert.match(json(effort.tree), /当前值；未声明支持/)
+  assert.match(json(effort.tree), /p\/m 未声明支持强度/)
+  assert.match(json(effort.tree), /ultra · 未声明支持/)
   await unmount(effort.tree)
 })
 
@@ -603,23 +634,28 @@ test('provider/model clear as a pair and unknown capability is labelled', async 
     value: formValue({ summarizationProvider: 'p', summarizationModel: 'm' }),
     handler: router({ models: { enabled: false, routes: [] } }),
   })
-  assert.match(json(unknown.tree), /此路由能力 unknown/)
-  assert.match(json(unknown.tree), /模型能力与实际可用性 unknown/)
+  assert.equal(byName(unknown.tree, 'reasoningEffort').type, 'input')
+  assert.match(byName(unknown.tree, 'reasoningEffort').props.placeholder, /能力未知/)
   assert.equal(byName(unknown.tree, 'reasoningEffort').props.value, '')
   await unmount(unknown.tree)
 })
 
-test('retention form switch clears the other form and saves one pair', async () => {
+test('retention switches preserve both drafts and save only the active form', async () => {
   const { tree, mutateCalls } = await renderPage({
     value: formValue({ retainRatio: 0.2 }),
   })
   assert.ok(byName(tree, 'retainRatio'))
-  const tokensRadio = hostNodes(tree, (props) => props.name === 'retainMode' && props.value === 'tokens')[0]
-  await act(async () => {
-    tokensRadio.props.onChange()
-  })
+  await change(tree, byName(tree, 'retainMode'), 'tokens')
   assert.equal(hostNodes(tree, (props) => props.name === 'retainRatio').length, 0)
   await change(tree, byName(tree, 'retainTokens'), '1000')
+  await change(tree, byName(tree, 'retainMode'), 'ratio')
+  assert.equal(byName(tree, 'retainRatio').props.value, '20')
+  await change(tree, byName(tree, 'retainRatio'), '0.25')
+  await change(tree, byName(tree, 'retainMode'), 'tokens')
+  assert.equal(byName(tree, 'retainTokens').props.value, '1000')
+  await change(tree, byName(tree, 'retainMode'), 'ratio')
+  assert.equal(byName(tree, 'retainRatio').props.value, '25')
+  await change(tree, byName(tree, 'retainMode'), 'tokens')
   await clickButton(tree, '保存设置')
   await flush()
   assert.equal(mutateCalls.length, 1)
@@ -630,6 +666,28 @@ test('retention form switch clears the other form and saves one pair', async () 
       (op) => op.op === 'set' && op.path[0] === 'retainTokens' && op.value === 1000,
     ),
   )
+  await unmount(tree)
+})
+
+test('policy retention drafts survive inheritance and save only the selected value', async () => {
+  const { tree, mutateCalls } = await renderPage({
+    value: formValue({ modelPolicies: [{ provider: 'p', model: 'm', retainRatio: 0.2 }] }),
+  })
+  await change(tree, byName(tree, 'policies.0.retainMode'), 'tokens')
+  await change(tree, byName(tree, 'policies.0.retainTokens'), '4096')
+  await change(tree, byName(tree, 'policies.0.retainMode'), 'inherit')
+  await change(tree, byName(tree, 'policies.0.retainMode'), 'ratio')
+  assert.equal(byName(tree, 'policies.0.retainRatio').props.value, '20')
+  await change(tree, byName(tree, 'policies.0.retainRatio'), '0.25')
+  await change(tree, byName(tree, 'policies.0.retainMode'), 'tokens')
+  assert.equal(byName(tree, 'policies.0.retainTokens').props.value, '4096')
+  await change(tree, byName(tree, 'policies.0.retainMode'), 'ratio')
+  assert.equal(byName(tree, 'policies.0.retainRatio').props.value, '25')
+  await clickButton(tree, '保存设置')
+  await flush()
+  assert.equal(mutateCalls.length, 1)
+  assert.deepEqual(mutateCalls[0].ops.find((op) => op.path[0] === 'modelPolicies').value,
+    [{ provider: 'p', model: 'm', retainRatio: 0.25 }])
   await unmount(tree)
 })
 
@@ -646,10 +704,7 @@ test('save sends one atomic mutation with the expected revision and preserves mo
   await change(tree, byName(tree, 'summarizationModel'), 'm')
   await change(tree, byName(tree, 'thresholdRatio'), '0.7')
   await change(tree, byName(tree, 'headroomTokens'), '32768')
-  const tokensRadio = hostNodes(tree, (props) => props.name === 'retainMode' && props.value === 'tokens')[0]
-  await act(async () => {
-    tokensRadio.props.onChange()
-  })
+  await change(tree, byName(tree, 'retainMode'), 'tokens')
   await change(tree, byName(tree, 'retainTokens'), '8000')
   await act(async () => {
     byName(tree, 'cachePriority').props.onChange({ target: { checked: false } })
@@ -661,7 +716,7 @@ test('save sends one atomic mutation with the expected revision and preserves mo
   await change(tree, byName(tree, 'compactionRetries'), '2')
   await change(tree, byName(tree, 'maxOverflowRetries'), '0')
   assert.match(json(tree), /p\/m/)
-  assert.match(json(tree), /maxTokens=100/)
+  assert.equal(byName(tree, 'policies.0.maxTokens').props.value, '100')
 
   await clickButton(tree, '保存设置')
   await flush()
@@ -693,8 +748,8 @@ test('save success asks for a profile reload and sends no write HTTP', async () 
   assert.equal(mutateCalls.length, 1)
   const message = byData(tree, 'save-saved')[0]
   assert.ok(message)
-  assert.match(json(tree), /已保存，需重载 profile/)
-  assert.match(json(tree), /刷新网页不生效/)
+  assert.match(json(tree), /已保存，重载后生效/)
+  assert.match(json(tree), /刷新网页不会更新运行引擎/)
   assert.ok(calls.length >= 2)
   assert.ok(calls.every((call) => call.init.method === 'GET'))
   assert.ok(calls.every((call) => call.url.startsWith('/better-compact/api/')))
@@ -714,16 +769,16 @@ test('a host revision change surfaces a conflict instead of silently overwriting
   }
   await first.update(external)
   assert.ok(byData(first.tree, 'revision-conflict')[0])
-  assert.match(json(first.tree), /不会覆盖较新配置/)
+  assert.match(json(first.tree), /配置已被其他页面更新/)
   const saveButton = byData(first.tree, 'save-button')[0]
   assert.equal(saveButton.props.disabled, true)
   await click(first.tree, saveButton)
   await flush()
   assert.equal(first.mutateCalls.length, 0)
-  await clickButton(first.tree, '重新读取宿主值')
+  await clickButton(first.tree, '重新读取')
   await flush()
   assert.equal(byData(first.tree, 'revision-conflict').length, 0)
-  assert.equal(byName(first.tree, 'thresholdRatio').props.value, '0.75')
+  assert.equal(byName(first.tree, 'thresholdRatio').props.value, '75')
   await unmount(first.tree)
 })
 
@@ -733,9 +788,9 @@ test('a refused or failed save keeps the draft and never reports success', async
   await clickButton(refused.tree, '保存设置')
   await flush()
   assert.ok(byData(refused.tree, 'save-rejected')[0])
-  assert.match(json(refused.tree), /草稿保留且未应用/)
-  assert.equal(byName(refused.tree, 'thresholdRatio').props.value, '0.7')
-  assert.equal(json(refused.tree).includes('已保存，需重载 profile'), false)
+  assert.match(json(refused.tree), /草稿已保留/)
+  assert.equal(byName(refused.tree, 'thresholdRatio').props.value, '70')
+  assert.equal(json(refused.tree).includes('已保存，重载后生效'), false)
   await unmount(refused.tree)
 
   const transported = await renderPage({
@@ -747,55 +802,69 @@ test('a refused or failed save keeps the draft and never reports success', async
   const transport = byData(transported.tree, 'save-transport')[0]
   assert.ok(transport)
   assert.match(json(transported.tree), /socket closed/)
-  assert.equal(byName(transported.tree, 'thresholdRatio').props.value, '0.7')
-  assert.equal(json(transported.tree).includes('已保存，需重载 profile'), false)
+  assert.equal(byName(transported.tree, 'thresholdRatio').props.value, '70')
+  assert.equal(json(transported.tree).includes('已保存，重载后生效'), false)
   await unmount(transported.tree)
+})
+
+test('threshold number and slider stay linked while runtime measurements remain unchanged', async () => {
+  const sessions = makeSessions({ ids: ['session-1'], byId: { 'session-1': { displayTitle: 'One' } } })
+  const { tree, mutateCalls } = await renderPage({ sessions, handler: router({ session: sessionPayload() }) })
+  await change(tree, byName(tree, 'thresholdRatio'), '0.6')
+  assert.equal(byName(tree, 'thresholdRatioSlider').props.value, 0.6)
+  assert.equal(byData(tree, 'draft-trigger')[0].children.join(''), '120,000 tokens')
+  await change(tree, byName(tree, 'thresholdRatioSlider'), '0.5')
+  assert.equal(byName(tree, 'thresholdRatio').props.value, '50')
+  assert.equal(byData(tree, 'draft-trigger')[0].children.join(''), '100,000 tokens')
+  assert.equal(byData(tree, 'runtime-trigger')[0].children.join(''), '160,000 tokens')
+  assert.equal(byData(tree, 'current-tokens')[0].children.join(''), '142,000 tokens')
+  assert.equal(mutateCalls.length, 0)
+  await unmount(tree)
+})
+
+test('older inspect payload keeps measured values and discloses unavailable draft budget inputs', async () => {
+  const sessions = makeSessions({ ids: ['session-1'], byId: { 'session-1': { displayTitle: 'One' } } })
+  const budget = measuredBudget()
+  delete budget.reservedCompletionTokens
+  delete budget.messageBudgetTokens
+  const { tree } = await renderPage({ sessions, handler: router({ session: sessionPayload({ budget }) }) })
+  assert.equal(byData(tree, 'current-tokens')[0].children.join(''), '142,000 tokens')
+  assert.equal(byData(tree, 'runtime-trigger')[0].children.join(''), '160,000 tokens')
+  assert.ok(byData(tree, 'budget-window-bar')[0])
+  assert.ok(byData(tree, 'budget-incomplete')[0])
+  assert.equal(byData(tree, 'draft-budget').length, 0)
+  assert.equal(byData(tree, 'draft-window-bar').length, 0)
+  assert.equal(byData(tree, 'draft-retain')[0].children.join(''), '未知')
+  await unmount(tree)
 })
 
 test('budget unknowns stay unknown while measured values, framing and safe cut are shown', async () => {
   const sessions = makeSessions({ ids: ['session-1'], byId: { 'session-1': { id: 'session-1', displayTitle: 'One', running: false } } })
-  const unknown = await renderPage({
-    sessions,
-    handler: router({
-      session: sessionPayload({
-        budget: {
-          contextWindow: null,
-          currentTokens: null,
-          measurement: 'unavailable',
-          fixedTokens: null,
-          thresholdTokens: null,
-          retainTokens: null,
-          summaryMaxTokens: null,
-        },
-        preview: null,
-      }),
-    }),
-  })
+  const unknown = await renderPage({ sessions, handler: router({ session: sessionPayload({
+    budget: { contextWindow: null, currentTokens: null, measurement: 'unavailable', fixedTokens: null, thresholdTokens: null, retainTokens: null, summaryMaxTokens: null }, preview: null,
+  }) }) })
   assert.ok(byData(unknown.tree, 'budget-incomplete')[0])
   assert.equal(/(?:^|[^\d,])0 tokens/.test(visibleText(unknown.tree)), false)
   assert.equal(visibleText(unknown.tree).includes('100%'), false)
   await unmount(unknown.tree)
-
-  const measured = await renderPage({
-    sessions,
-    handler: router({ session: sessionPayload() }),
-  })
+  const measured = await renderPage({ sessions, handler: router({ session: sessionPayload() }) })
   const windowBar = byData(measured.tree, 'budget-window-bar')[0]
   assert.ok(windowBar)
-  assert.match(windowBar.props['aria-label'], /window 200,000 tokens/)
-  assert.match(windowBar.props['aria-label'], /current 142,000 tokens/)
-  assert.match(windowBar.props['aria-label'], /fixed prefix 12,000 tokens/)
-  assert.match(windowBar.props['aria-label'], /retained tail 20,000 tokens/)
-  assert.match(json(measured.tree), /measured \(provider usage anchor\)/)
-  assert.equal(hostNodes(measured.tree, (props) => props['data-bc-current'] === 'true').length, 1)
-  assert.ok(byData(measured.tree, 'before-label')[0])
-  assert.ok(byData(measured.tree, 'after-label')[0])
-  assert.ok(byData(measured.tree, 'retention-compare')[0])
-  assert.match(json(measured.tree), /手动压缩 \/ 上下文超限恢复/)
-  assert.match(json(measured.tree), /不是永久 pin/)
-  assert.match(json(measured.tree), /安全切点候选：surface seq 2–9/)
-  assert.match(json(measured.tree), /预算上界估算/)
-  assert.match(json(measured.tree), /不是生成摘要长度预测/)
+  assert.match(windowBar.props['aria-label'], /窗口 200,000 tokens/)
+  assert.match(windowBar.props['aria-label'], /当前上下文 142,000 tokens/)
+  assert.match(visibleText(measured.tree), /用量基于服务商返回值校准/)
+  assert.equal(hostNodes(measured.tree, (props) => props.className === 'dsh-bc-current-line').length, 1)
+  const before = byData(measured.tree, 'before-bar')[0]
+  const after = byData(measured.tree, 'after-bar')[0]
+  assert.ok(before)
+  assert.ok(after)
+  assert.ok(before.findAll((node) => node.type === 'div' && node.props.title === '实际保留原文 · 30,000 tokens').length)
+  assert.ok(after.findAll((node) => node.type === 'div' && node.props.title === '摘要预算与封装 · 8,098 tokens').length)
+  assert.match(visibleText(measured.tree), /手动 \/compact 与超限恢复/)
+  assert.match(visibleText(measured.tree), /实际原文可能更多/)
+  assert.match(byData(measured.tree, 'safe-cut')[0].children.join(''), /选区 2–9/)
+  assert.match(byData(measured.tree, 'safe-cut')[0].children.join(''), /50,098 tokens/)
+  assert.match(visibleText(measured.tree), /不是实际摘要长度预测/)
   await unmount(measured.tree)
 })
 
@@ -835,8 +904,10 @@ test('compaction status distinguishes completed, unknown cache usage and persist
   const completed = await renderPage({ sessions, handler: router({ session: sessionPayload() }) })
   assert.ok(byData(completed.tree, 'last-compaction')[0])
   assert.match(json(completed.tree), /已完成 · 自动/)
-  assert.match(json(completed.tree), /缓存用量未知（unknown）/)
-  assert.equal(json(completed.tree).includes('缓存读取 token'), false)
+  const cacheRows = hostNodes(completed.tree, (props) => props.className === 'dsh-bc-row').filter((node) => node.children.some((child) => typeof child === 'object' && child.findAll((part) => part.type === 'span' && part.children.includes('缓存读取')).length))
+  assert.equal(cacheRows.length, 1)
+  assert.match(visibleText(completed.tree), /未报告的数值显示为未知/)
+  assert.equal(cacheRows[0].children[1].children.join(''), '未知', 'missing cache usage is never rendered as zero')
   await unmount(completed.tree)
 
   const persistence = await renderPage({
@@ -860,8 +931,8 @@ test('compaction status distinguishes completed, unknown cache usage and persist
   })
   assert.match(json(persistence.tree), /持久化失败 · 手动/)
   assert.ok(byData(persistence.tree, 'persistence-error')[0])
-  assert.match(json(persistence.tree), /并非普通成功，也不是全部回滚/)
-  assert.match(json(persistence.tree), /原生记录错误：flush failed/)
+  assert.match(json(persistence.tree), /摘要可能已写入，但会话保存失败/)
+  assert.match(json(persistence.tree), /flush failed/)
   await unmount(persistence.tree)
 
   const usage = await renderPage({
@@ -876,9 +947,9 @@ test('compaction status distinguishes completed, unknown cache usage and persist
       }),
     }),
   })
-  assert.match(json(usage.tree), /缓存读取 token（实测）/)
+  assert.match(json(usage.tree), /缓存读取/)
   assert.match(json(usage.tree), /7 tokens/)
-  assert.match(json(usage.tree), /缓存写入 token（实测）/)
+  assert.match(json(usage.tree), /缓存写入/)
   assert.match(json(usage.tree), /3 tokens/)
   await unmount(usage.tree)
 })
@@ -901,9 +972,9 @@ test('handoff continuation and deduplicated diagnostics are shown', async () => 
   })
   const continuation = byData(tree, 'handoff-continuation')[0]
   assert.ok(continuation)
-  assert.match(json(tree), /等待用户或阻塞条件解除/)
+  assert.match(json(tree), /本次续作已跳过/)
   assert.match(json(tree), /a user question is still pending/)
-  assert.match(json(tree), /历史重放、刷新页面或重载插件不会再次调度续作/)
+  assert.equal(hostNodes(tree, (props, node) => node.type === 'button' && node.children.some((child) => typeof child === 'string' && child.includes('续作'))).length, 0, 'diagnostic continuation display has no scheduling action')
   assert.equal((json(tree).match(/diagnostic one/g) ?? []).length, 1)
   assert.match(json(tree), /diagnostic two/)
   await unmount(tree)
@@ -954,7 +1025,7 @@ test('session selection fetches the chosen session, aborts stale requests and st
 
   const empty = await renderPage()
   assert.equal(empty.calls.some((call) => call.url.includes('sessionId=')), false)
-  assert.match(json(empty.tree), /暂无会话，仅显示插件状态。/)
+  assert.match(json(empty.tree), /选择会话查看压缩记录/)
   assert.ok(byData(empty.tree, 'status-empty')[0])
   await unmount(empty.tree)
 })
@@ -967,7 +1038,7 @@ test('inspect failure leaves the form editable and never triggers a write', asyn
     },
   })
   assert.match(json(tree), /session is not visible/)
-  assert.match(json(tree), /表单仍可编辑/)
+  assert.equal(byName(tree, 'thresholdRatio').props.disabled, false, 'a diagnostic failure does not lock settings')
   const handoff = hostNodes(tree, (props) => props.role === 'radio' && props['data-mode'] === 'handoff')[0]
   await click(tree, handoff)
   await clickButton(tree, '保存设置')
@@ -1022,13 +1093,14 @@ test('page uses host theme tokens, reduced motion and labels every control', asy
   assert.match(css, /prefers-reduced-motion:reduce/)
   assert.match(css, /@container better-compact \(max-width:560px\)/)
   assert.match(css, /:focus-visible/)
-  assert.doesNotMatch(css, /#[0-9a-fA-F]{3,8}\b/)
+  assert.match(css, /--bc-accent:#3388BB/)
+  assert.doesNotMatch(css.replace('--bc-accent:#3388BB', '').replace('--bc-on-accent:#fff', ''), /#[0-9a-fA-F]{3,8}\b/)
 
   const controls = hostNodes(tree, (props, node) => ['input', 'select', 'textarea'].includes(node.type))
   assert.ok(controls.length >= 10)
   for (const control of controls) {
     assert.equal(typeof control.props.name, 'string', 'every control must carry a name')
-    let labelled = false
+    let labelled = typeof control.props['aria-label'] === 'string' && control.props['aria-label'].length > 0
     if (typeof control.props.id === 'string' && control.props.id.length > 0) {
       labelled = hostNodes(tree, (props) => props.htmlFor === control.props.id).length > 0
     }
@@ -1046,4 +1118,59 @@ test('client source contains no token-count or compaction-selection implementati
   assert.doesNotMatch(SOURCE, /tokenMeter|compactableRange|estimateMessage|estimateToolsTokens|selectCompactableRange/)
   assert.doesNotMatch(SOURCE, /\/better-compact\/api\/[a-z/]+['"`][\s\S]{0,200}method:\s*['"](?:POST|PUT|PATCH|DELETE)/)
   assert.match(SOURCE, /method: 'GET'/)
+})
+
+test('strategy diagrams remain visible inside their selectable cards', async () => {
+  const { tree } = await renderPage()
+  const cards = hostNodes(tree, (props) => props.role === 'radio')
+  assert.equal(cards.length, 3)
+  for (const card of cards) {
+    assert.equal(card.findAll((node) => node.type === 'svg').length, 1)
+    assert.equal(card.findAll((node) => node.type === 'details').length, 0)
+  }
+  assert.equal(byData(tree, 'runtime-preview')[0].props.open, undefined)
+  assert.equal(byName(tree, 'thresholdRatio').props.disabled, false)
+  const retentionChoices = hostNodes(tree, (props) => props.name === 'retainMode')
+  assert.deepEqual(retentionChoices.map((node) => [node.props.type, node.props.value]), [['radio', 'ratio'], ['radio', 'tokens']])
+  assert.equal(retentionChoices.filter((node) => node.props.checked).length, 1)
+  await unmount(tree)
+})
+
+test('manual-only compaction disables its trigger without discarding the configured ratio', async () => {
+  const { tree } = await renderPage({ value: formValue({ auto: false, thresholdRatio: 0.73 }) })
+  assert.equal(byName(tree, 'thresholdRatio').props.disabled, true)
+  assert.equal(byName(tree, 'thresholdRatioSlider').props.disabled, true)
+  assert.equal(byName(tree, 'thresholdRatio').props.value, '73')
+  assert.equal(byName(tree, 'retainRatio').props.disabled, false)
+  await act(async () => byName(tree, 'auto').props.onChange({ target: { checked: true } }))
+  assert.equal(byName(tree, 'thresholdRatio').props.disabled, false)
+  assert.equal(byName(tree, 'thresholdRatio').props.value, '73')
+  await unmount(tree)
+})
+
+test('model policy edits save atomically and enforce retention and summary dependencies', async () => {
+  const { tree, mutateCalls } = await renderPage()
+  await click(tree, byData(tree, 'add-policy')[0])
+  await change(tree, byName(tree, 'policies.0.provider'), 'custom')
+  await change(tree, byName(tree, 'policies.0.model'), 'large')
+  await change(tree, byName(tree, 'policies.0.thresholdRatio'), '0.1')
+  await clickButton(tree, '保存设置')
+  assert.equal(mutateCalls.length, 0, 'inherited retention cannot exceed a policy trigger')
+  await change(tree, byName(tree, 'policies.0.retainMode'), 'tokens')
+  await change(tree, byName(tree, 'policies.0.retainTokens'), '8000')
+  await change(tree, byName(tree, 'policies.0.summaryMode'), 'custom')
+  await change(tree, byName(tree, 'policies.0.summarizationProvider'), 'other')
+  await clickButton(tree, '保存设置')
+  assert.equal(mutateCalls.length, 0, 'summary provider and model must be a complete pair')
+  await change(tree, byName(tree, 'policies.0.summarizationModel'), 'summary')
+  await clickButton(tree, '保存设置')
+  assert.equal(mutateCalls.length, 1)
+  assert.equal(mutateCalls[0].expectedRevision, 3)
+  assert.equal(mutateCalls[0].ops.length, 2)
+  assert.deepEqual(mutateCalls[0].ops.find((op) => op.path[0] === 'modelPolicies'), { op: 'set', path: ['modelPolicies'], value: [{
+    provider: 'custom', model: 'large', thresholdRatio: 0.1, retainTokens: 8000,
+    summarizationProvider: 'other', summarizationModel: 'summary',
+  }] })
+  assert.deepEqual(mutateCalls[0].ops.find((op) => op.path[0] === 'retainTokens'), { op: 'unset', path: ['retainTokens'] })
+  await unmount(tree)
 })

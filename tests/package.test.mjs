@@ -1,7 +1,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync, existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { execFileSync } from 'node:child_process'
 import yaml from 'js-yaml'
 
@@ -22,8 +24,10 @@ const preset = loadPatch(new URL('presets/better-compact.patch.yml', root))
 
 test('package metadata matches the published contract', () => {
   assert.equal(pkg.name, 'dsh-better-compact')
-  assert.equal(pkg.version, '0.1.2')
-  assert.equal(pkg.license, 'GPL-3.0-or-later')
+  assert.equal(pkg.version, '0.2.0')
+  assert.equal(pkg.license, 'Apache-2.0')
+  const license = readFileSync(new URL('LICENSE', root), 'utf8')
+  assert.equal(createHash('sha256').update(license).digest('hex'), 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.repository.url, 'git+https://github.com/Menghuan1918/dsh-better-compact.git')
   assert.equal(pkg.engines.node, '^22.19.0 || >=24.0.0')
@@ -146,13 +150,24 @@ test('release workflow uses OIDC trusted publishing with no token', () => {
   assert.equal(workflow.includes('NODE_AUTH_TOKEN'), false)
 })
 
-test('tracked files contain no design specs or temp artifacts', () => {
-  const tracked = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
-    cwd: new URL('.', root),
-    encoding: 'utf8',
+function packageFiles(directory, prefix = '') {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.name === '.git' || entry.name === 'node_modules') return []
+    const path = `${prefix}${entry.name}`
+    return entry.isDirectory()
+      ? packageFiles(join(directory, entry.name), `${path}/`)
+      : [path]
   })
-    .split('\n')
-    .filter(Boolean)
+}
+
+test('package files contain no design specs or temp artifacts', () => {
+  // An enclosing repository does not own the inventory of an exported package copy.
+  const tracked = existsSync(new URL('.git', root))
+    ? execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
+      cwd: root,
+      encoding: 'utf8',
+    }).split('\n').filter(Boolean)
+    : packageFiles(fileURLToPath(root))
   assert.ok(tracked.length > 0)
   for (const path of tracked) {
     assert.equal(/10-28-better-plugins|\.worktrees\/|node_modules\//.test(path), false, path)

@@ -296,8 +296,15 @@ export function buildBudgetPreview(input) {
   }
   if (budgetReason !== undefined) diagnostics.push(budgetReason)
 
+  const reservedCompletion = target === undefined ? null : header?.config?.maxTokens ?? info?.defaultMaxTokens ?? 0
   const budget = {
+    target: target ?? null,
     contextWindow,
+    reservedCompletionTokens: reservedCompletion,
+    messageBudgetTokens: contextWindow === null || reservedCompletion === null ? null : contextWindow - reservedCompletion,
+    headroomTokens: policy?.headroomTokens ?? null,
+    pressureBudgetTokens: policy === undefined || contextWindow === null || reservedCompletion === null ? null : contextWindow - reservedCompletion - policy.headroomTokens,
+    ratioThresholdTokens: policy === undefined || contextWindow === null ? null : Math.floor(contextWindow * policy.thresholdRatio),
     currentTokens: measurement?.totalTokens ?? null,
     measurement: measurementKind(measurement),
     fixedTokens:
@@ -387,6 +394,9 @@ export function buildBudgetPreview(input) {
     preview: {
       beforeTokens: measurement.totalTokens,
       afterUpperBoundTokens,
+      retainedTokens: tailTokens,
+      replacedTokens: measurement.totalTokens - (budget.fixedTokens ?? 0) - tailTokens,
+      checkpointFramingTokens: NATIVE_CHECKPOINT_FRAMING_TOKENS,
       rangeStart: range.start,
       rangeEnd: range.end,
       reason,

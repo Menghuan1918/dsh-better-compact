@@ -6,8 +6,8 @@ adds two continuation-oriented summarization modes: **goal** (default) and
 inspect/models API. It does not need Apollo, a second history database, or a
 custom write API.
 
-- Package: `dsh-better-compact` `0.1.2`
-- License: GPL-3.0-or-later (adapted DSH material remains MIT; see
+- Package: `dsh-better-compact` `0.2.0`
+- License: Apache-2.0 (adapted DSH material remains MIT; see
   [third-party/NOTICE](third-party/NOTICE))
 - Host baseline: DSH `>=0.2.1-rc.2 <0.3.0` (`0.2.1-rc.2` is the verified build)
 - Node.js: `^22.19.0 || >=24.0.0`
@@ -36,7 +36,7 @@ creates a new session, answers a pending question, or changes goal state.
 Standalone (no Apollo):
 
 ```sh
-dsh plugin --profile <profile> add dsh-better-compact@0.1.2
+dsh plugin --profile <profile> add dsh-better-compact@0.2.0
 ```
 
 From GitHub main (secondary entry point):
@@ -177,29 +177,33 @@ provider-reported cache usage is shown, never an estimated savings rate.
   disabled with "not applicable: the native implementation decides"; the saved
   enhanced values are kept for switching back and are not claimed to have
   applied.
-- **Budget/retention.** The diagram uses `inspect.budget` only: context window,
-  current tokens, fixed system/tools prefix, earlier-history region, retained
-  tail, the configured `thresholdRatio` plus the effective `thresholdTokens`,
-  and the output-reserve/headroom zone after the trigger. It states that the
-  exact output-reserve/headroom split is not exposed by the payload. Retention
-  is either a ratio or absolute tokens (saving one writes the other as an
-  unset op); the resolved safe cut comes from `inspect.preview` or the page says
-  "no computable safe cut". Automatic pressure retention is contrasted with the
-  more aggressive manual/overflow span, and the retained tail is called a
-  budget, not a permanent pin. The before/after composition and
-  `afterUpperBoundTokens` are labelled an upper-bound estimate, not a prediction.
-  Capacity, fixed-prefix, retention-vs-trigger, and no-safe-region diagnostics
-  name the control to adjust.
-- **Cache priority.** The switch copy is exactly
-  "优先复用缓存（尽可能保留 KV Cache 前缀）". The explanation covers prefix reuse,
+- **Budget/retention.** Runtime counts and safe cuts come from `inspect`; a
+  separate draft diagram applies the editable policy to the selected session's
+  known window and conversation output reservation. The trigger is the smaller
+  of the window-ratio limit and `window - conversation output - headroom`;
+  space left by the ratio limit is shown separately from headroom. Retention
+  ratios use `window - conversation output`, not the full window. Retention
+  is either a ratio or absolute tokens (saving one unsets the other), and the
+  effective retained budget must remain below the effective trigger. The
+  collapsed runtime preview uses the actual safe-cut tail, summary output cap,
+  and checkpoint framing for its before/after bars and upper-bound estimate.
+  It distinguishes automatic pressure retention from the more aggressive
+  manual/overflow span. Unknown fields stay unavailable, and a failed refresh
+  does not present an older safe cut as current.
+- **Cache priority.** The switch is labelled "优先复用提示缓存". The collapsed
+  explanation covers prefix reuse,
   model-switch cost, and prefix invalidation after a replacement; it never claims
   lossless KV reuse or zero cache loss.
-- **Advanced.** `auto`, `headroomTokens`, `maxTokens`, `compactionRetries`
-  (post-compaction pressure retries) and `maxOverflowRetries` (context-overflow
-  recoveries) are editable with the two retry meanings stated separately.
-  Effective `modelPolicies` are shown read-only; the global form never writes or
-  drops them. There are no handoff-directory, compaction-history, memory, or
-  sidecar controls.
+- **Advanced.** The budget section owns automatic compaction and headroom;
+  summary settings own the summary output cap. Advanced settings contain
+  `compactionRetries` (post-compaction pressure retries), `maxOverflowRetries`
+  (context-overflow recoveries), and a visual `modelPolicies` editor. Rules
+  match exact conversation provider/model identities; omitted values inherit
+  globals, while retention and summary-route selectors make overrides explicit.
+  Global edits validate inherited rules, and shared effort is checked against
+  known policy summary routes. Unchanged policies are preserved; edited rules
+  join the same atomic host save. There are no handoff-directory,
+  compaction-history, memory, or sidecar controls.
 
 ### Saving and apply-on-reload
 
@@ -246,7 +250,7 @@ units, and meanings are preserved from `@deepseek-ai/dsh-compaction-basic`
 | `maxTokens` | follows resolved `headroomTokens` | Positive summary output cap, counted with input against the model context window. |
 | `compactionRetries` | `1` | Extra attempts when pressure remains after a successful compaction (not a network retry count). |
 | `maxOverflowRetries` | `1` | Bounded provider-confirmed context-overflow recoveries; `0` disables recovery. |
-| `modelPolicies` | `[]` | Exact `{provider, model, ...native partial policy}` overrides with native semantics; no visual rule editor in this version. |
+| `modelPolicies` | `[]` | Exact `{provider, model, ...native partial policy}` overrides with native semantics; the settings page adds/removes/edits rules and validates them like every other field. |
 
 The unresolved checks are enforced at load/reload and by the visual settings form:
 mutually exclusive retention forms, an empty/non-empty summarization pair,
@@ -452,8 +456,8 @@ Response fields (unknown values are `null`, never `0`):
 | `sessionId` | Echo of the requested session, or `null` without one. |
 | `diagnostics` | Always an array of read-only strings for the visual settings page. It carries token-meter/model-info failures, budget-capacity reasons, last-summary budget omissions, and the engine-applicability reason (empty when everything is available). |
 | `engine` | `null` without a session, else `{owner, inspectApplies, reason}`. `owner` is `host`, `better-compact-preset`, `foreign-preset`, or `unknown`. A **foreign preset** (the shipped Web `standard` preset, for example) runs its own native engine, so `inspectApplies: false`, `budget`/`preview` are `null`, and `lastCompaction` is still projected from that session's real events. A cold/non-live session cannot prove ownership and is reported `unknown` with the active configuration. |
-| `budget` | `null` without a session, else `{contextWindow, currentTokens, measurement, fixedTokens, thresholdTokens, retainTokens, summaryMaxTokens}`. `measurement` is `measured` (provider-usage anchor), `estimated` (fixed heuristic), or `unavailable`. |
-| `preview` | `null` without a usable session, else `{beforeTokens, afterUpperBoundTokens, rangeStart, rangeEnd, reason}`. `rangeStart`/`rangeEnd` are native surface seqs from the automatic-pressure safe-cut rule; `afterUpperBoundTokens` includes the summary output budget and is an upper-bound estimate, not a prediction. `reason` explains below-trigger/no-range/unavailable. |
+| `budget` | `null` without a session, else `{target, contextWindow, reservedCompletionTokens, messageBudgetTokens, headroomTokens, pressureBudgetTokens, ratioThresholdTokens, currentTokens, measurement, fixedTokens, thresholdTokens, retainTokens, summaryMaxTokens}`. The added reservation and pressure fields describe the conversation model, independently of the summary output cap. `measurement` is `measured` (provider-usage anchor), `estimated` (fixed heuristic), or `unavailable`. |
+| `preview` | `null` without a usable session, else `{beforeTokens, afterUpperBoundTokens, rangeStart, rangeEnd, reason}`; a safe range additionally reports `retainedTokens`, `replacedTokens`, and `checkpointFramingTokens`. `rangeStart`/`rangeEnd` are native surface seqs from the automatic-pressure safe-cut rule. `afterUpperBoundTokens` includes the actual aligned tail, summary output cap and checkpoint framing; it is an upper-bound estimate, not a prediction. `reason` explains below-trigger/no-range/unavailable. |
 | `lastCompaction` | `null` when no compaction exists, else `{id, trigger, status, mode, beforeTokens, afterTokens, durationMs, cacheReadTokens, cacheWriteTokens, error}` projected only from real events/usage. |
 | `handoffContinuation` | `null` until this process makes a manual handoff continuation decision, else `{compactionId, status: 'scheduled'\|'skipped', blockers, at}`. `blockers` names queued input, paused/blocked goal, pending question, running job, running child, cancellation, or a queue failure so the visual settings page can show why nothing continued. |
 
@@ -500,7 +504,7 @@ second algorithm.
 
 ## Licensing
 
-The package is GPL-3.0-or-later. Small substantive parts adapted from the MIT
+The package is Apache-2.0. Small substantive parts adapted from the MIT
 DeepSeek Harness packages (budget formulas, summarization request shape, verbose
 preset copy) remain under MIT; copyright and license text are preserved in
 [third-party/LICENSE-MIT-dsh](third-party/LICENSE-MIT-dsh) and described in

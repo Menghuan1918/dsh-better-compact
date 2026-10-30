@@ -1,6 +1,6 @@
 # Third-party notices
 
-`dsh-better-compact` is licensed GPL-3.0-or-later (see `LICENSE`). It adapts
+`dsh-better-compact` is licensed Apache-2.0 (see `LICENSE`). It adapts
 small, substantive parts of the MIT-licensed DeepSeek Harness packages; those
 parts remain available under the MIT license reproduced in
 `third-party/LICENSE-MIT-dsh`.
