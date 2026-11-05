@@ -7,11 +7,10 @@ commits, docs, or the npm package.
 
 ## Status and compatibility
 
-- Package version: `0.1.1`.
-- Verified DSH build: `0.2.1-rc.2`; `engines.dsh` is
-  `>=0.2.1-rc.2 <0.3.0`. That range admits later RCs but is not a per-version
-  verification promise.
-- Node.js `^22.19.0 || >=24.0.0`.
+- Package version: `0.3.0`.
+- Verified DSH build: `0.2.2-rc.1`; `engines.dsh` is
+  exactly `0.2.2-rc.1`; other builds are not supported by this release.
+- Node.js `>=24.9.0`.
 - Pure ESM, no build step, no generated assets.
 - The visual settings page is implemented as the zero-build browser half and
   covered by `react-test-renderer` component tests with a fake Host form. A
@@ -24,7 +23,7 @@ commits, docs, or the npm package.
 | --- | --- |
 | [package.json](../package.json) | npm metadata, exports, peers, `dsh.bundle.patch`, `dsh.client`. |
 | [cordis.patch.yml](../cordis.patch.yml) | Standalone composition: disable host `compaction-basic`, insert host companion + host-plane engine rows. |
-| [presets/better-compact.patch.yml](../presets/better-compact.patch.yml) | Selectable Web preset: pinned rc.2 `standard` copy with the compaction group's engine swapped. |
+| [presets/better-compact.patch.yml](../presets/better-compact.patch.yml) | Selectable Web preset: pinned rc.1 `standard` copy with the compaction group's engine swapped. |
 | [src/index.js](../src/index.js) | Host companion row: volatile `Config`, `betterCompactConfig` service, settings policy, GET inspect route, test seam for the fence. |
 | [src/engine.js](../src/engine.js) | `BetterCompactEngine extends BasicCompactionEngine`: enhanced `summarize()`, preset-supersede guard, manual handoff continuation, failure classification. |
 | [src/config.js](../src/config.js) | Single source of truth for defaults, schema, normalization, native projection, row keys. |
@@ -78,8 +77,12 @@ installed build:
 3. **Host-plane engine guard.** The standalone bundle also inserts a host-plane
    engine for headless/TUI. Agent events are delivered to untagged root
    listeners, so in Web the host engine would otherwise see every preset agent.
-   `compactIfNeeded` compares `ctx.agentPresets.serviceFor(agent,'compaction')`
-   with itself and returns `null` when a preset owns the engine. Cordis wraps
+   Native automatic listeners are registered through an extended public context
+   that gates `agent/pre-step`, `agent/request`, and `agent/request-error` by
+   `ctx.agentPresets.serviceFor(agent,'compaction')`. In rc.1 the request-model
+   switch path bypasses `compactIfNeeded`, so that method's existing guard alone
+   is insufficient. Native callbacks still own proposed-header pricing and
+   durable transactions; no upstream private methods are overridden. Cordis wraps
    services in proxies, so identity is compared through
    `symbols.original`; a raw `!==` check wrongly treats a preset engine as
    "another" engine.
@@ -347,9 +350,12 @@ The read-only payload is the shared contract the visual settings page renders; t
    preset identity/metadata and the compaction group engine row. The package
    test compares it against the installed standard preset while
    `DSH_PACKAGE_ROOT` points at that install.
-3. Re-check the Web composition: which rows are preset-owned/disabled and
+3. Read authoritative todo/question wire views with one complete
+   `sessionProjections.snapshot(session, new Set(['todos', 'userQuestions']))`;
+   do not use the deprecated `stateOf` or partial `cachedSnapshot` reads.
+4. Re-check the Web composition: which rows are preset-owned/disabled and
    whether the preset group still isolates `compaction`/`toolResultPruner`.
-4. Re-run unit tests and the smoke; then check the current GUI/URL only as part
+5. Re-run unit tests and the smoke; then check the current GUI/URL only as part
    of the S4 integration task.
 
 ## Known unverified areas

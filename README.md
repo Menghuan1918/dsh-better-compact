@@ -6,11 +6,11 @@ adds two continuation-oriented summarization modes: **goal** (default) and
 inspect/models API. It does not need Apollo, a second history database, or a
 custom write API.
 
-- Package: `dsh-better-compact` `0.2.0`
+- Package: `dsh-better-compact` `0.3.0`
 - License: Apache-2.0 (adapted DSH material remains MIT; see
   [third-party/NOTICE](third-party/NOTICE))
-- Host baseline: DSH `>=0.2.1-rc.2 <0.3.0` (`0.2.1-rc.2` is the verified build)
-- Node.js: `^22.19.0 || >=24.0.0`
+- Host baseline: DSH `0.2.2-rc.1` (`0.2.2-rc.1` is the verified build)
+- Node.js: `>=24.9.0`
 - Pure ESM, no build step.
 
 ## What it changes
@@ -36,13 +36,13 @@ creates a new session, answers a pending question, or changes goal state.
 Standalone (no Apollo):
 
 ```sh
-dsh plugin --profile <profile> add dsh-better-compact@0.2.0
+dsh plugin --profile <profile> add dsh-better-compact@0.3.0
 ```
 
-From GitHub main (secondary entry point):
+From the matching GitHub tag (secondary entry point):
 
 ```sh
-dsh plugin --profile <profile> add github:Menghuan1918/dsh-better-compact
+dsh plugin --profile <profile> add github:Menghuan1918/dsh-better-compact#v0.3.0
 ```
 
 After installing or changing a load-time setting, **restart the DSH profile**
@@ -89,11 +89,11 @@ rows, so this package ships its own selectable preset:
   detects a preset-owned engine and stays out of the way rather than
   double-compacting.
 
-The preset is a verbatim copy of the installed DSH `0.2.1-rc.2` `standard`
+The preset is a verbatim copy of the installed DSH `0.2.2-rc.1` `standard`
 preset with exactly one row changed inside the compaction group
 (`compaction-basic` → `dsh-better-compact/engine`). If upstream changes its
 standard preset, this copy must be refreshed for that host version; it is not a
-dynamic reference. The copy is a known rc.2-era limitation, not a claim that
+dynamic reference. The copy is a known pinned-preset limitation, not a claim that
 preset composition is stable across DSH releases.
 
 ### Headless / TUI / non-preset compositions
@@ -235,7 +235,7 @@ successful compaction.
 
 The host companion row `dsh-better-compact` owns the schema. Native key names,
 units, and meanings are preserved from `@deepseek-ai/dsh-compaction-basic`
-`0.2.1-rc.2`; enhanced-only keys are stripped before the native base sees them.
+`0.2.2-rc.1`; enhanced-only keys are stripped before the native base sees them.
 
 | Key | Default | Constraint / meaning |
 | --- | --- | --- |
@@ -274,7 +274,7 @@ therefore takes one frozen snapshot at load:
 - a save **never** reconfigures a running engine;
 - restart the DSH profile to take the new snapshot.
 
-This is the closest honest mapping to DSH 0.2.1-rc.2, which has no host "saved
+This is the closest honest mapping to DSH 0.2.2-rc.1, which has no host "saved
 but requires reload" state of its own.
 
 ### Reasoning effort and cache priority
@@ -488,14 +488,14 @@ read through `ctx.sessionQuery.observeSession` and replayed into a detached
 meter fails, the affected numbers are unavailable rather than computed by a
 second algorithm.
 
-## Host drift and limitations (DSH 0.2.1-rc.2)
+## Host drift and limitations (DSH 0.2.2-rc.1)
 
 - Web compaction is **preset-owned**; the bundle cannot replace it globally.
   The host-plane engine exists for headless/TUI and for presets without a
   compaction group, and detects preset-owned engines to avoid double work.
 - There is no host reload state. Saving is volatile and immediate; load-time
   snapshot changes need a profile restart.
-- The shipped `preset-better-compact` is a pinned copy of the rc.2 standard
+- The shipped `preset-better-compact` is a pinned copy of the rc.1 standard
   preset. Re-verify/refresh it when changing DSH baseline.
 - The inspect API has no separate authentication beyond the Host trust fence.
 - One compaction provider per context/realm only. Do not mount a second
@@ -539,9 +539,10 @@ Verified in this repository (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)):
   covered, and the preset manual path shares the same engine code. Run the exact
   commands for the current test counts.
 
-The current build was verified with **115 unit/component tests** and **45
-real-profile smoke checks** at commit time; always prefer the fresh command
-output over these numbers.
+Run the commands in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for fresh
+unit/component and real-profile smoke results. The smoke requires the exact
+`0.2.2-rc.1` host and checks model switches in host, Better Compact, and foreign
+standard-preset realms before the new request header is persisted.
 
 **Not verified here:** real-model summary fidelity, reasoning-effort quality,
 provider cache-read/write hit rates against a real provider, and a visual/

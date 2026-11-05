@@ -126,7 +126,24 @@ export class BetterCompactEngine extends BasicCompactionEngine {
       )
     }
     const snapshot = companion.snapshot()
-    super(ctx, toNativeConfig(snapshot))
+    // Gate the native listeners at their public registration boundary. In rc.1
+    // model-switch pressure no longer dispatches through compactIfNeeded(), so
+    // guarding that method alone lets the host compact another preset's session.
+    // Keep native callbacks (including proposed-header pricing) unchanged.
+    let engine
+    const engineCtx = ctx.extend({
+      on(event, listener, options) {
+        if (!['agent/pre-step', 'agent/request', 'agent/request-error'].includes(event)) {
+          return ctx.on(event, listener, options)
+        }
+        return ctx.on(event, function (payload, next) {
+          if (engine._supersededByPreset(payload.agent)) return next()
+          return listener.call(this, payload, next)
+        }, options)
+      },
+    })
+    super(engineCtx, toNativeConfig(snapshot))
+    engine = this
     /** Frozen load-time configuration actually in force. */
     this.snapshot = snapshot
     /** Enhanced mode in force for this engine instance. */

@@ -1,7 +1,7 @@
 /**
  * Budget and safe-cut adapter for dsh-better-compact.
  *
- * The DSH 0.2.1-rc.2 `@deepseek-ai/dsh-compaction-basic` build is a bundled
+ * The DSH 0.2.2-rc.1 `@deepseek-ai/dsh-compaction-basic` build is a bundled
  * library that does not export its config resolution, capacity scaling, or
  * retention selection helpers. This module re-implements exactly those rules
  * for two consumers that must agree:
@@ -59,12 +59,12 @@ export function targetFromHeader(header) {
 /**
  * Output tokens the routed request reserves, charged to the same window as the
  * prompt. The effective envelope's cap wins; otherwise the adapter default.
- * @param {object} session - session carrying the latest request header.
+ * @param {object | undefined} header - effective request header, including a proposed model switch.
  * @param {number | undefined} defaultMaxTokens - adapter per-request default.
  * @returns {number} reserved completion tokens.
  */
-export function reservedCompletionTokens(session, defaultMaxTokens) {
-  return session.requestHeader()?.config.maxTokens ?? defaultMaxTokens ?? 0
+export function reservedCompletionTokens(header, defaultMaxTokens) {
+  return header?.config.maxTokens ?? defaultMaxTokens ?? 0
 }
 
 /** Resolve retention from an override, else the already-resolved global form. */

@@ -2,6 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { rm, readFile } from 'node:fs/promises'
 import { Context } from '@deepseek-ai/cordis'
+import { agentEvents } from '@deepseek-ai/dsh-agent'
 import { BasicCompactionEngine } from '@deepseek-ai/dsh-compaction-basic'
 import { GOAL_SECTIONS, HANDOFF_SECTIONS, HANDOFF_TITLE } from '../src/prompts.js'
 import { readConfig } from '../src/config.js'
@@ -82,6 +83,24 @@ test('the engine reads only the frozen snapshot and keeps the native base config
     assert.equal(engine.config.retainRatio, 0.1)
     assert.deepEqual(Engine.Config({}), {})
     assert.deepEqual(Engine.inject, ['llm', 'tokenMeter', 'sessions', 'betterCompactConfig'])
+  } finally {
+    await dispose()
+  }
+})
+
+test('automatic model switching belongs only to the selected preset engine', async () => {
+  const agent = fakeAgent()
+  const { ctx, dispose } = await makeEngine(normalized(), {
+    extra: { agentPresets: { serviceFor: () => ({}) } },
+  })
+  const proposed = { provider: 'p', model: 'smaller', maxTokens: 20 }
+  try {
+    const result = await agentEvents(ctx, agent).waterfall(
+      'agent/request',
+      { signal: new AbortController().signal },
+      async () => proposed,
+    )
+    assert.equal(result, proposed)
   } finally {
     await dispose()
   }
@@ -204,8 +223,7 @@ test('goal mode injects live authoritative state and passes effort/cache control
       extra: {
         goals: { get: () => goal },
         sessionProjections: {
-          stateOf: (_, key) =>
-            key === 'todos' ? [{ content: 'Run smoke', status: 'in_progress' }] : undefined,
+          snapshot: () => ({ values: { todos: [{ content: 'Run smoke', status: 'in_progress' }] } }),
         },
         jobs: { list: () => [] },
         agents: { list: () => [] },

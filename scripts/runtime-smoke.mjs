@@ -43,13 +43,16 @@ const home = await mkdtemp(join(tmpdir(), 'dsh-better-compact-smoke-'))
 process.env.DSH_HOME = home
 process.env.DSH_TELEMETRY_DISABLED = '1'
 
+const hostPackage = JSON.parse(await readFile(join(dsh, 'package.json'), 'utf8'))
+assert.equal(hostPackage.version, '0.2.2-rc.1', 'smoke requires the exact supported host')
 const appBoot = await import(at('dsh-app-boot/lib/index.js'))
+const { PROFILE_TEMPLATES } = await import(at('dsh-official-bundles/lib/index.js'))
 const { symbols } = await import(at('cordis/lib/index.js'))
 const { createUserMessage } = await import(at('dsh-llm/lib/index.js'))
 const { runProfile } = await import(at('dsh/lib/profile-boot.js'))
 
 const profileDir = appBoot.resolveProfileDir('it', home)
-appBoot.initProfile(profileDir, [...appBoot.PROFILE_TEMPLATES.headless.bundles, 'dsh-better-compact'])
+appBoot.initProfile(profileDir, [...PROFILE_TEMPLATES.headless.bundles, 'dsh-better-compact'])
 
 // Install a published-layout copy: only shipped files, with peers resolved from
 // the same runtime as the host. No copied node_modules, no .git, no specs.
@@ -77,6 +80,13 @@ const standardPresetPatches = appBoot.loadOverlayPatches(
   'better-compact-smoke',
   join(dirname(dsh), 'dsh-web-app', 'presets', 'standard.patch.yml'),
 )
+// Give the foreign native engine a deliberately different pressure threshold.
+// A model switch below that threshold must not be compacted by the host row.
+standardPresetPatches[0].insert[0].config.plugins
+  .find((row) => row.id === 'compaction').config
+  .find((row) => row.id === 'compaction-basic').config = {
+    thresholdRatio: 0.5, headroomTokens: 50, retainTokens: 100, maxTokens: 100,
+  }
 
 /** Initial row override: absolute retention + a small-capacity test route. */
 const INITIAL_CONFIG = {
@@ -96,6 +106,8 @@ await writeFile(
       ...standardPresetPatches,
       { id: 'headless-startup', disabled: true },
       { id: 'headless-runner', disabled: true },
+      // This test drives agents directly, so no CLI startup owns sandbox options.
+      { id: 'sandbox-policy', inject: [], config: { mode: 'workspace-write', workspaceRoot: home, additionalWritableRoots: [] } },
       { id: 'dsh-better-compact', config: INITIAL_CONFIG },
       { id: 'credentials', disabled: false, config: { watch: false } },
       {
@@ -221,7 +233,7 @@ const adapter = {
     id,
     name: id,
     inputModalities: ['text'],
-    context: { contextWindow: llmState.contextWindow },
+    context: { contextWindow: id === 'smaller' ? 30000 : llmState.contextWindow },
     defaultMaxTokens: 64,
     reasoning: {
       efforts: [
@@ -329,11 +341,18 @@ async function authenticateInspector(ctx) {
 async function boot() {
   const booted = await runProfile({
     profile: 'it',
+    // Anchor at the throwaway project: the shared host can sit below a repo
+    // whose ancestor node_modules contains an older copy of this bundle.
+    resolvedProfile: {
+      profile: appBoot.loadProfileDirectory('dsh', profileDir, manifestPath),
+      installAnchor: manifestPath,
+    },
     patchFiles: [],
     args: [],
     environment: appBoot.loadLayeredEnv('dsh'),
   })
   booted.ctx.llm.registerAdapter(['it-noop'], adapter)
+  assert.doesNotMatch((await booted.ctx.agentPresets.readDocument('better-compact')).content, /tool-subagent-list-agents/)
   await authenticateInspector(booted.ctx)
   return booted.ctx
 }
@@ -546,6 +565,39 @@ try {
   assert.equal(modelsPost.response.status, 405)
   assert.equal(modelsPost.response.headers.get('allow'), 'GET')
   check('models-route-allowed-catalog')
+
+  // rc.1 prepares a proposed header before persisting the model switch. Use
+  // real model.select + AgentLoop dispatch in all three ownership realms.
+  for (const preset of [null, 'better-compact', 'standard']) {
+    const switched = preset === null ? await createHostAgent(ctx) : await createPresetAgent(ctx, preset)
+    const recSwitch = record(ctx, switched)
+    llmState.scripted = [() => 's'.repeat(1200), () => 's'.repeat(15000), () => 't'.repeat(800), 'switched reply']
+    await runTurn(switched, recSwitch, 'seed switch history')
+    await runTurn(switched, recSwitch, 'grow switch history below old threshold')
+    await runTurn(switched, recSwitch, 'add a small retained tail')
+    assert.equal(recSwitch.count('compaction/start'), 0)
+    const before = ctx.tokenMeter.measure(switched.session)
+    assert.ok(before.totalTokens > 7500 && before.totalTokens < 15000, String(before.totalTokens))
+    const offReserve = ctx.on('agent/request', async ({ agent }, next) => {
+      const config = await next()
+      return agent.id === switched.id && config.model === 'smaller' ? { ...config, maxTokens: 4096 } : config
+    })
+    switched.model.select({ provider: 'it-noop', model: 'smaller' })
+    await runTurn(switched, recSwitch, 'switch to the smaller model')
+    const header = switched.session.requestHeader()
+    assert.equal(header.config.model, 'smaller')
+    assert.equal(header.config.maxTokens, 4096)
+    assert.equal(recSwitch.count('compaction/start'), preset === 'standard' ? 0 : 1,
+      'only the selected engine may apply its threshold to a model switch')
+    if (preset !== 'standard') {
+      const summary = summaryFor(recSwitch, lastCompactionStart(recSwitch).data.compactionId)
+      assert.equal(summary.data.model, 'noop', 'the summary keeps the previous durable route')
+      assert.ok(ctx.tokenMeter.measure(switched.session, header).totalTokens < 7500)
+    }
+    check('model-switch-proposed-header-' + (preset ?? 'host'))
+    offReserve()
+    recSwitch.dispose()
+  }
 
   // ── Agent A: automatic pressure + goal/todo state ────────────────────────
   const agentA = await createHostAgent(ctx)

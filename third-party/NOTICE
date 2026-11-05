@@ -7,7 +7,7 @@ parts remain available under the MIT license reproduced in
 
 ## DeepSeek Harness (`@deepseek-ai/*`, MIT, Copyright (c) 2026 DeepSeek)
 
-The following adapted material is derived from the installed DSH 0.2.1-rc.2
+The following adapted material is derived from the installed DSH 0.2.2-rc.1
 package `@deepseek-ai/dsh-compaction-basic` (and, for the preset copy,
 `@deepseek-ai/dsh-web-app`):
 
@@ -27,7 +27,7 @@ package `@deepseek-ai/dsh-compaction-basic` (and, for the preset copy,
   are new; reasoning-effort/cache-priority handling and output structure
   validation are added.
 - `presets/better-compact.patch.yml` — a verbatim copy of
-  `@deepseek-ai/dsh-web-app@0.2.1-rc.2` `presets/standard.patch.yml` with exactly
+  `@deepseek-ai/dsh-web-app@0.2.2-rc.1` `presets/standard.patch.yml` with exactly
   one row (`compaction-basic` → `dsh-better-compact/engine`) and the preset
   identity/metadata changed. The original copyright and MIT license apply.
 

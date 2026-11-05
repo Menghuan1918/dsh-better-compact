@@ -186,6 +186,11 @@ function makeForm(value, options = {}) {
     async mutate(ops, expectedRevision) {
       mutateCalls.push({ ops, expectedRevision })
       if (mutateError !== null) throw mutateError
+      if (mutateResult) {
+        const next = { ...form.state.value }
+        for (const op of ops) { if (op.op === 'unset') delete next[op.path[0]]; else next[op.path[0]] = op.value }
+        form.state = { ...form.state, value: next, revision: form.state.revision + 1 }
+      }
       return mutateResult
     },
   }
@@ -275,9 +280,17 @@ async function click(tree, node) {
 }
 
 async function change(tree, node, value) {
+  if (node.props.role === 'combobox') {
+    if (!node.props['aria-expanded']) await click(tree, node)
+    const option = hostNodes(tree, (props) => props.role === 'option' && props['data-value'] === value)[0]
+    assert.ok(option, 'expected option ' + value)
+    await click(tree, option)
+    return
+  }
   await act(async () => {
     const displayValue = node.props.type === 'number' && node.props.name.endsWith('Ratio') && value !== '' ? String(Number(value) * 100) : value
-    node.props.onChange({ target: { value: displayValue } })
+    const control = node.props.type === 'radio' ? hostNodes(tree, (props) => props.name === node.props.name && props.value === value)[0] : node
+    control.props.onChange({ target: { value: displayValue } })
   })
 }
 
@@ -301,8 +314,8 @@ test('strategy arrows touch their actual source and destination boxes', async ()
   const { tree } = await renderPage()
   const required = {
     native: [['history', 'summary'], ['recent', 'tail'], ['summary', 'checkpoint']],
-    goal: [['history', 'summary'], ['authority', 'summary']],
-    handoff: [['history', 'file'], ['file', 'summary'], ['summary', 'continuation']],
+    goal: [['history', 'summary'], ['authority', 'summary'], ['recent', 'tail']],
+    handoff: [['history', 'file'], ['file', 'summary'], ['recent', 'tail'], ['summary', 'continuation'], ['tail', 'continuation']],
   }
   for (const [mode, pairs] of Object.entries(required)) {
     const svg = hostNodes(tree, (p, n) => n.type === 'svg' && p['data-diagram'] === mode)[0]
@@ -346,7 +359,7 @@ test('inherited retention uses the schema default and distinguishes the running 
   assert.equal(calls.length, 2, 'draft edits do not fetch or invoke an LLM')
   await unmount(tree)
   const unknown = await renderPage({ handler: router({ plugin: pluginPayload({ activeConfig: null }) }) })
-  assert.match(visibleText(unknown.tree), /运行状态未知/)
+  assert.equal(byData(unknown.tree, 'active-config').length, 0, 'an unknown runtime snapshot does not add a permanent status banner')
   assert.equal(byName(unknown.tree, 'retainRatio').props.placeholder, '16', 'the default comes from the inspected schema, independent of the runtime snapshot')
   await unmount(unknown.tree)
 })
@@ -357,14 +370,15 @@ test('model picker changes provider/model atomically and preserves incompatible 
     handler: router({ models: modelsPayload() }),
   })
   const picker = byName(tree, 'summaryRoute')
-  assert.equal(picker.type, 'select')
-  const choice = picker.findAllByType('option').find((n) => n.children.join('') === 'p/m')
+  assert.equal(picker.props.role, 'combobox')
+  await click(tree, picker)
+  const choice = hostNodes(tree, (props) => props.role === 'option' && props['data-value'] === JSON.stringify(['p', 'm']))[0]
   assert.ok(choice)
-  await change(tree, picker, choice.props.value)
+  await click(tree, choice)
   assert.equal(byName(tree, 'summarizationProvider').props.value, 'p')
   assert.equal(byName(tree, 'summarizationModel').props.value, 'm')
   assert.equal(byName(tree, 'reasoningEffort').props.value, 'ultra')
-  assert.ok(byName(tree, 'reasoningEffort').findAllByType('option').some((n) => n.props.value === 'ultra'))
+  assert.match(byName(tree, 'reasoningEffort').children[0].children.join(''), /ultra · 未声明支持/)
   assert.equal(byData(tree, 'save-button')[0].props.disabled, true)
   await change(tree, byName(tree, 'reasoningEffort'), 'high')
   assert.equal(byData(tree, 'save-button')[0].props.disabled, false)
@@ -380,7 +394,7 @@ test('model picker changes provider/model atomically and preserves incompatible 
 test('client module identity, exports and slot registration stay stable', () => {
   const { entry, exports } = loadClient()
   assert.equal(entry.id, 'dsh-better-compact')
-  assert.deepEqual(exports.inject, ['slots', 'sessions'])
+  assert.deepEqual(exports.inject, ['slots', 'sessions', 'locale'])
   assert.deepEqual(exports.ROW_CONFIG_KEYS, [
     'dsh-better-compact#dsh-better-compact',
     '@menghuan1918/dsh-apollo#dsh-better-compact',
@@ -549,14 +563,14 @@ test('selected mode differing from the active snapshot is flagged for a profile 
   )[0]
   const banner = byData(tree, 'active-config')[0]
   assert.ok(banner, 'the runtime/saved distinction stays visible in the shared banner')
-  assert.match(visibleText(tree), /已保存，待重载/)
+  assert.match(visibleText(tree), /已保存配置与运行配置不同/)
   assert.equal(goalCard.props['aria-checked'], true)
-  assert.match(visibleText(tree), /保存后需重启 DSH 或重载配置档/)
+  assert.match(visibleText(tree), /查看运行配置/)
   assert.equal(banner.props['data-requires-reload'], 'true')
   await unmount(tree)
 })
 
-test('native mode disables enhanced effort and cache controls but keeps saved values', async () => {
+test('native mode hides enhanced effort and cache controls but keeps saved values', async () => {
   const { tree } = await renderPage({
     value: formValue({
       mode: 'native',
@@ -567,14 +581,8 @@ test('native mode disables enhanced effort and cache controls but keeps saved va
     }),
     handler: router({ models: modelsPayload() }),
   })
-  const effort = byName(tree, 'reasoningEffort')
-  const cache = byName(tree, 'cachePriority')
-  assert.equal(effort.props.disabled, true)
-  assert.equal(effort.props.value, 'ultra')
-  assert.equal(cache.props.disabled, true)
-  assert.equal(cache.props.checked, true)
-  assert.match(json(tree), /由原生引擎决定/)
-  assert.equal(cache.props.checked, true, 'native mode preserves the enhanced preference')
+  assert.equal(hostNodes(tree, (props) => props.name === 'reasoningEffort').length, 0)
+  assert.equal(hostNodes(tree, (props) => props.name === 'cachePriority').length, 0)
   assert.equal(byName(tree, 'summarizationProvider').props.disabled, false)
   assert.equal(hostNodes(tree, (props) => props['data-bc-error'] === 'reasoningEffort').length, 0)
 
@@ -709,12 +717,10 @@ test('save sends one atomic mutation with the expected revision and preserves mo
   await act(async () => {
     byName(tree, 'cachePriority').props.onChange({ target: { checked: false } })
   })
-  await act(async () => {
-    byName(tree, 'auto').props.onChange({ target: { checked: false } })
-  })
   await change(tree, byName(tree, 'maxTokens'), '4096')
   await change(tree, byName(tree, 'compactionRetries'), '2')
   await change(tree, byName(tree, 'maxOverflowRetries'), '0')
+  await act(async () => byName(tree, 'auto').props.onChange({ target: { checked: false } }))
   assert.match(json(tree), /p\/m/)
   assert.equal(byName(tree, 'policies.0.maxTokens').props.value, '100')
 
@@ -748,8 +754,8 @@ test('save success asks for a profile reload and sends no write HTTP', async () 
   assert.equal(mutateCalls.length, 1)
   const message = byData(tree, 'save-saved')[0]
   assert.ok(message)
-  assert.match(json(tree), /已保存，重载后生效/)
-  assert.match(json(tree), /刷新网页不会更新运行引擎/)
+  assert.match(json(tree), /已保存，重载 DSH 后生效/)
+  assert.equal(byData(tree, 'save-footer').length, 0)
   assert.ok(calls.length >= 2)
   assert.ok(calls.every((call) => call.init.method === 'GET'))
   assert.ok(calls.every((call) => call.url.startsWith('/better-compact/api/')))
@@ -834,7 +840,7 @@ test('older inspect payload keeps measured values and discloses unavailable draf
   assert.ok(byData(tree, 'budget-incomplete')[0])
   assert.equal(byData(tree, 'draft-budget').length, 0)
   assert.equal(byData(tree, 'draft-window-bar').length, 0)
-  assert.equal(byData(tree, 'draft-retain')[0].children.join(''), '未知')
+  assert.equal(byData(tree, 'draft-retain').length, 0, 'no allocation is fabricated without the window inputs')
   await unmount(tree)
 })
 
@@ -852,7 +858,7 @@ test('budget unknowns stay unknown while measured values, framing and safe cut a
   assert.ok(windowBar)
   assert.match(windowBar.props['aria-label'], /窗口 200,000 tokens/)
   assert.match(windowBar.props['aria-label'], /当前上下文 142,000 tokens/)
-  assert.match(visibleText(measured.tree), /用量基于服务商返回值校准/)
+  assert.match(visibleText(measured.tree), /用量已校准/)
   assert.equal(hostNodes(measured.tree, (props) => props.className === 'dsh-bc-current-line').length, 1)
   const before = byData(measured.tree, 'before-bar')[0]
   const after = byData(measured.tree, 'after-bar')[0]
@@ -860,11 +866,10 @@ test('budget unknowns stay unknown while measured values, framing and safe cut a
   assert.ok(after)
   assert.ok(before.findAll((node) => node.type === 'div' && node.props.title === '实际保留原文 · 30,000 tokens').length)
   assert.ok(after.findAll((node) => node.type === 'div' && node.props.title === '摘要预算与封装 · 8,098 tokens').length)
-  assert.match(visibleText(measured.tree), /手动 \/compact 与超限恢复/)
-  assert.match(visibleText(measured.tree), /实际原文可能更多/)
   assert.match(byData(measured.tree, 'safe-cut')[0].children.join(''), /选区 2–9/)
   assert.match(byData(measured.tree, 'safe-cut')[0].children.join(''), /50,098 tokens/)
-  assert.match(visibleText(measured.tree), /不是实际摘要长度预测/)
+  assert.ok(byData(measured.tree, 'before-bar')[0])
+  assert.ok(byData(measured.tree, 'after-bar')[0])
   await unmount(measured.tree)
 })
 
@@ -906,7 +911,6 @@ test('compaction status distinguishes completed, unknown cache usage and persist
   assert.match(json(completed.tree), /已完成 · 自动/)
   const cacheRows = hostNodes(completed.tree, (props) => props.className === 'dsh-bc-row').filter((node) => node.children.some((child) => typeof child === 'object' && child.findAll((part) => part.type === 'span' && part.children.includes('缓存读取')).length))
   assert.equal(cacheRows.length, 1)
-  assert.match(visibleText(completed.tree), /未报告的数值显示为未知/)
   assert.equal(cacheRows[0].children[1].children.join(''), '未知', 'missing cache usage is never rendered as zero')
   await unmount(completed.tree)
 
@@ -996,7 +1000,7 @@ test('a foreign compaction engine suppresses budget/preview but keeps real recor
   assert.equal(byData(tree, 'safe-cut').length, 0)
   assert.ok(byData(tree, 'last-compaction')[0])
   assert.match(text, /已完成 · 自动/)
-  assert.ok(byData(tree, 'budget-not-applicable')[0])
+  assert.match(byData(tree, 'engine-note')[0].children.join(''), /其他压缩引擎/)
   await unmount(tree)
 })
 
@@ -1025,7 +1029,7 @@ test('session selection fetches the chosen session, aborts stale requests and st
 
   const empty = await renderPage()
   assert.equal(empty.calls.some((call) => call.url.includes('sessionId=')), false)
-  assert.match(json(empty.tree), /选择会话查看压缩记录/)
+  assert.match(json(empty.tree), /选择会话查看用量与压缩记录/)
   assert.ok(byData(empty.tree, 'status-empty')[0])
   await unmount(empty.tree)
 })
@@ -1093,10 +1097,13 @@ test('page uses host theme tokens, reduced motion and labels every control', asy
   assert.match(css, /prefers-reduced-motion:reduce/)
   assert.match(css, /@container better-compact \(max-width:560px\)/)
   assert.match(css, /:focus-visible/)
-  assert.match(css, /--bc-accent:#3388BB/)
-  assert.doesNotMatch(css.replace('--bc-accent:#3388BB', '').replace('--bc-on-accent:#fff', ''), /#[0-9a-fA-F]{3,8}\b/)
+  assert.match(css, /--cfg-accent:#3388bb/)
+  assert.match(css, /--cfg-solid:#20709e/)
+  assert.ok(css.includes('[data-ds-dark-theme] .dsh-bc-page'))
+  assert.match(css, /--cfg-accent:#4eb0e8/)
+  assert.doesNotMatch(css.replace(/--cfg-[a-z-]+:[^;}]+/g, ''), /#[0-9a-fA-F]{3,8}\b/)
 
-  const controls = hostNodes(tree, (props, node) => ['input', 'select', 'textarea'].includes(node.type))
+  const controls = hostNodes(tree, (props, node) => ['input', 'textarea'].includes(node.type) || props.role === 'combobox')
   assert.ok(controls.length >= 10)
   for (const control of controls) {
     assert.equal(typeof control.props.name, 'string', 'every control must carry a name')
@@ -1128,7 +1135,7 @@ test('strategy diagrams remain visible inside their selectable cards', async () 
     assert.equal(card.findAll((node) => node.type === 'svg').length, 1)
     assert.equal(card.findAll((node) => node.type === 'details').length, 0)
   }
-  assert.equal(byData(tree, 'runtime-preview')[0].props.open, undefined)
+  assert.equal(byData(tree, 'runtime-preview').length, 0, 'no runtime preview appears without a diagnostic session')
   assert.equal(byName(tree, 'thresholdRatio').props.disabled, false)
   const retentionChoices = hostNodes(tree, (props) => props.name === 'retainMode')
   assert.deepEqual(retentionChoices.map((node) => [node.props.type, node.props.value]), [['radio', 'ratio'], ['radio', 'tokens']])
@@ -1136,12 +1143,9 @@ test('strategy diagrams remain visible inside their selectable cards', async () 
   await unmount(tree)
 })
 
-test('manual-only compaction disables its trigger without discarding the configured ratio', async () => {
+test('manual-only compaction hides its trigger without discarding the configured ratio', async () => {
   const { tree } = await renderPage({ value: formValue({ auto: false, thresholdRatio: 0.73 }) })
-  assert.equal(byName(tree, 'thresholdRatio').props.disabled, true)
-  assert.equal(byName(tree, 'thresholdRatioSlider').props.disabled, true)
-  assert.equal(byName(tree, 'thresholdRatio').props.value, '73')
-  assert.equal(byName(tree, 'retainRatio').props.disabled, false)
+  for (const name of ['thresholdRatio', 'thresholdRatioSlider', 'retainRatio']) assert.equal(hostNodes(tree, (props) => props.name === name).length, 0)
   await act(async () => byName(tree, 'auto').props.onChange({ target: { checked: true } }))
   assert.equal(byName(tree, 'thresholdRatio').props.disabled, false)
   assert.equal(byName(tree, 'thresholdRatio').props.value, '73')

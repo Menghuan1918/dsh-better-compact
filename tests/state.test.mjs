@@ -41,14 +41,15 @@ test('collectAuthoritativeState reads goal, todos, questions, jobs and children 
       },
     },
     sessionProjections: {
-      stateOf: (session, key) => {
+      snapshot: (session, keys) => {
         assert.equal(session, agent.session)
-        if (key === 'todos') return [{ content: 'tests', status: 'in_progress' }]
-        if (key === 'userQuestions') {
-          return { questions: { active: [{ callId: 'c1', state: 'continued', questions: [{ id: 'q', question: 'ok?' }] }] } }
-        }
-        return undefined
+        assert.deepEqual([...keys], ['todos', 'userQuestions'])
+        return { values: {
+          todos: [{ content: 'tests', status: 'in_progress' }],
+          userQuestions: { active: [{ callId: 'c1', state: 'continued', questions: [{ id: 'q', question: 'ok?' }] }] },
+        } }
       },
+      stateOf: () => { throw new Error('deprecated projection reads are forbidden') },
     },
     jobs: {
       list: () => [
@@ -85,6 +86,12 @@ test('collectAuthoritativeState degrades to empty/unknown without optional servi
   )
   assert.equal(broken.goal, null)
   assert.match(broken.goalError, /GOAL_AGENT_NOT_LIVE/)
+})
+
+test('authoritative projection failure cannot masquerade as no pending work', () => {
+  const ctx = fakeCtx({ sessionProjections: { snapshot: () => { throw new Error('projection unavailable') } } })
+  assert.throws(() => collectAuthoritativeState(ctx, fakeAgent()), /projection unavailable/)
+  assert.throws(() => handoffContinuationBlockers(ctx, fakeAgent()), /projection unavailable/)
 })
 
 test('readRunningChildren follows parentSession lineage and running status', () => {
@@ -156,10 +163,9 @@ test('handoffContinuationBlockers refuses every documented unsafe state', () => 
       services: {
         agents: { list: () => [] },
         sessionProjections: {
-          stateOf: (_, key) =>
-            key === 'userQuestions'
-              ? { questions: { active: [{ callId: 'c', state: 'open', questions: [] }] } }
-              : undefined,
+          snapshot: () => ({ values: {
+            userQuestions: { active: [{ callId: 'c', state: 'open', questions: [] }] },
+          } }),
         },
       },
       expected: /question is still pending/,

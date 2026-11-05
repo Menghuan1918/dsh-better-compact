@@ -46,6 +46,7 @@ async function mount(options = {}) {
     return React.createElement(entry, { form: { state, mutate: async (ops, revision) => {
       calls.push({ ops: plain(ops), revision })
       if (options.reject) return false
+      if (options.saveWait) await options.saveWait
       const value = { ...state.value }
       for (const op of ops) { assert.equal(op.path.length, 1); if (op.op === 'unset') delete value[op.path[0]]; else value[op.path[0]] = plain(op.value) }
       readConfig(value)
@@ -56,14 +57,18 @@ async function mount(options = {}) {
   }
   let renderer
   await act(async () => { renderer = Renderer.create(React.createElement(Host)) })
-  const input = (name) => renderer.root.find((node) => typeof node.type === 'string' && node.props.name === name)
+  const input = (name) => renderer.root.find((node) => typeof node.type === 'string' && node.props.name === name && (node.props.type !== 'radio' || node.props.checked))
   const by = (name) => renderer.root.find((node) => typeof node.type === 'string' && node.props['data-bc'] === name)
-  const change = async (name, value) => act(async () => {
-    const control = name === 'retainMode'
-      ? renderer.root.find((node) => node.type === 'input' && node.props.name === name && node.props.value === value)
-      : input(name)
-    control.props.onChange({ target: { value, checked: value } })
-  })
+  const change = async (name, value) => {
+    const control = input(name)
+    if (control.props.role === 'combobox') {
+      await act(async () => control.props.onClick())
+      await act(async () => renderer.root.find((node) => node.props.role === 'option' && node.props['data-value'] === value).props.onClick())
+    } else {
+      const target = control.props.type === 'radio' ? renderer.root.find((node) => node.type === 'input' && node.props.name === name && node.props.value === value) : control
+      await act(async () => target.props.onChange({ target: { value, checked: value } }))
+    }
+  }
   const click = async (name) => act(async () => by(name).props.onClick())
   const dispose = () => act(() => renderer.unmount())
   return { renderer, input, by, change, click, calls, requests, replace: (next) => act(() => replace(next)), value: () => current, failRefresh: () => { failed = true }, dispose }
@@ -99,7 +104,8 @@ test('save atomically switches retention forms, preserves untouched policies, an
   assert.equal(ui.value().retainRatio, undefined)
   assert.deepEqual(ui.value().modelPolicies, policies)
   assert.ok(!ui.calls[0].ops.some((op) => op.path[0] === 'modelPolicies'))
-  assert.equal(ui.by('save-button').props.disabled, true)
+  assert.equal(ui.renderer.root.findAllByProps({ 'data-bc': 'save-footer' }).length, 0)
+  assert.match(text(ui.by('save-saved')), /已保存/ )
   ui.dispose()
 })
 
@@ -118,22 +124,23 @@ test('visual policy editor saves inheritance, empty summary override, and exact 
   ui.dispose()
 })
 
-test('native and automatic dependencies disable only applicable controls; read-only blocks mutations', async () => {
+test('native and automatic dependencies hide inapplicable controls without losing draft values; read-only blocks editing', async () => {
   const ui = await mount({ value: base })
+  const count = (name) => ui.renderer.root.findAll((node) => typeof node.type === 'string' && node.props.name === name).length
+  assert.equal(ui.renderer.root.findAllByProps({ 'data-bc': 'save-footer' }).length, 0)
   await act(async () => ui.renderer.root.findByProps({ 'data-mode': 'native' }).props.onClick())
-  assert.equal(ui.input('reasoningEffort').props.disabled, true)
-  assert.equal(ui.input('cachePriority').props.disabled, true)
+  assert.equal(count('reasoningEffort'), 0)
+  assert.equal(count('cachePriority'), 0)
   assert.equal(ui.input('summaryRoute').props.disabled, false)
   await ui.change('auto', false)
-  assert.equal(ui.input('maxOverflowRetries').props.disabled, true)
-  assert.equal(ui.input('compactionRetries').props.disabled, true)
-  assert.equal(ui.input('thresholdRatio').props.disabled, true)
-  assert.equal(ui.input('thresholdRatioSlider').props.disabled, true)
+  for (const name of ['maxOverflowRetries', 'compactionRetries', 'thresholdRatio', 'thresholdRatioSlider', 'retainMode']) assert.equal(count(name), 0)
+  await ui.change('auto', true)
   assert.equal(ui.input('thresholdRatio').props.value, '80')
+  assert.equal(ui.input('maxOverflowRetries').props.value, '1')
   ui.dispose()
   const locked = await mount({ value: base, writable: false })
-  for (const node of locked.renderer.root.findAll((node) => node.type === 'input' || node.type === 'select' && node.props.name !== 'inspectSession')) assert.equal(node.props.disabled, true)
-  await locked.click('save-button')
+  for (const node of locked.renderer.root.findAll((node) => node.type === 'input' || node.props.role === 'combobox' && node.props.name !== 'inspectSession')) assert.equal(node.props.disabled, true)
+  assert.equal(locked.renderer.root.findAllByProps({ 'data-bc': 'save-footer' }).length, 0)
   assert.equal(locked.calls.length, 0)
   locked.dispose()
 })
@@ -232,3 +239,104 @@ test('zero headroom needs an explicit output cap and duplicate policies never sa
   inherited.dispose()
 })
 
+
+test('custom combobox previews with keyboard, commits on Enter, and consumes Escape before the host', async () => {
+  const ui = await mount({ value: base })
+  const page = () => ui.renderer.root.findByProps({ 'data-better-compact': 'page' })
+  const key = async (value) => {
+    const event = { key: value, defaultPrevented: false, stopped: false,
+      preventDefault() { this.defaultPrevented = true }, stopPropagation() { this.stopped = true } }
+    await act(async () => ui.input('summaryRoute').props.onKeyDown(event))
+    return event
+  }
+  assert.equal(ui.input('summaryRoute').type, 'button')
+  assert.equal(ui.input('summaryRoute').props['aria-expanded'], false)
+  await key('ArrowDown')
+  await key('End')
+  const active = ui.input('summaryRoute').props['aria-activedescendant']
+  const selectedOption = ui.renderer.root.findByProps({ id: active })
+  assert.equal(selectedOption.props['data-value'], JSON.stringify(['p', 'm']))
+  assert.equal(page().props['data-settings-dirty'], false, 'highlighting does not change the draft')
+  const escape = await key('Escape')
+  assert.equal(escape.defaultPrevented, true)
+  assert.equal(escape.stopped, true)
+  assert.equal(ui.input('summaryRoute').props['aria-expanded'], false)
+  assert.equal(ui.input('summaryRoute').props.value, '')
+  await key('ArrowDown')
+  await key('End')
+  await key('Enter')
+  assert.equal(ui.input('summarizationProvider').props.value, 'p')
+  assert.equal(ui.input('summarizationModel').props.value, 'm')
+  assert.equal(page().props['data-settings-dirty'], true)
+  await key('Home')
+  await key('Enter')
+  assert.equal(page().props['data-settings-dirty'], false)
+  assert.equal(ui.renderer.root.findAllByProps({ 'data-bc': 'save-footer' }).length, 0)
+  ui.dispose()
+})
+
+test('draft guards expose pending save and clear only after the host accepts the saved snapshot', async () => {
+  let finish
+  const saveWait = new Promise((resolve) => { finish = resolve })
+  const ui = await mount({ value: base, saveWait })
+  const page = () => ui.renderer.root.findByProps({ 'data-better-compact': 'page' })
+  assert.equal(page().props['data-settings-dirty'], false)
+  await ui.change('thresholdRatio', '60')
+  assert.equal(page().props['data-settings-dirty'], true)
+  let pending
+  await act(async () => { pending = ui.by('save-button').props.onClick() })
+  assert.equal(page().props['data-settings-busy'], true)
+  assert.equal(ui.by('save-button').props['aria-busy'], true)
+  assert.equal(ui.by('save-button').props.disabled, true)
+  await act(async () => { finish(); await pending })
+  assert.equal(ui.calls.length, 1)
+  assert.equal(page().props['data-settings-busy'], false)
+  assert.equal(page().props['data-settings-dirty'], false)
+  assert.equal(ui.renderer.root.findAllByProps({ 'data-bc': 'save-footer' }).length, 0)
+  assert.match(text(ui.by('save-saved')), /已保存/)
+  ui.dispose()
+})
+
+test('retention drafts survive mode switches without creating false dirty state or policy rewrites', async () => {
+  const ui = await mount({ value: { ...base, modelPolicies: [{ provider: 'other', model: 'model', retainRatio: .2 }] } })
+  const page = () => ui.renderer.root.findByProps({ 'data-better-compact': 'page' })
+  await ui.change('retainMode', 'tokens')
+  await ui.change('retainTokens', '80')
+  await ui.change('retainMode', 'ratio')
+  assert.equal(ui.input('retainRatio').props.value, '16')
+  assert.equal(page().props['data-settings-dirty'], false)
+  await ui.change('policies.0.retainMode', 'tokens')
+  await ui.change('policies.0.retainTokens', '60')
+  await ui.change('policies.0.retainMode', 'ratio')
+  assert.equal(page().props['data-settings-dirty'], false)
+  await ui.change('retainMode', 'tokens')
+  assert.equal(ui.input('retainTokens').props.value, '80')
+  await ui.click('save-button')
+  assert.equal(page().props['data-settings-dirty'], false)
+  assert.equal(ui.calls[0].ops.some((op) => op.path[0] === 'modelPolicies'), false)
+  ui.dispose()
+})
+
+test('diagnostics and draft allocation stay separate, advanced summaries expose only nondefault settings, and help consumes Escape', async () => {
+  const ui = await mount({ value: base, preview: true })
+  const status = ui.renderer.root.findByProps({ 'data-bc-section': 'status' })
+  const names = status.findAll((node) => typeof node.type === 'string' && node.props.name).map((node) => node.props.name)
+  assert.deepEqual(names, ['inspectSession'])
+  assert.equal(ui.by('draft-budget').findAllByProps({ 'data-bc': 'runtime-trigger' }).length, 0)
+  assert.match(text(ui.by('advanced-summary')), /余量/)
+  assert.equal(ui.by('advanced').props.open, undefined)
+  const explain = ui.renderer.root.findAll((node) => node.type === 'details' && node.props.className === 'dsh-bc-explanation')[0]
+  let focused = false
+  const target = { open: true, querySelector: () => ({ focus: () => { focused = true } }) }
+  const event = { key: 'Escape', currentTarget: target, defaultPrevented: false, stopped: false,
+    preventDefault() { this.defaultPrevented = true }, stopPropagation() { this.stopped = true } }
+  explain.props.onKeyDown(event)
+  assert.equal(target.open, false)
+  assert.equal(event.defaultPrevented, true)
+  assert.equal(event.stopped, true)
+  assert.equal(focused, true)
+  ui.dispose()
+  const defaults = await mount({ window: 200000 })
+  assert.equal(defaults.renderer.root.findAllByProps({ 'data-bc': 'advanced-summary' }).length, 0)
+  defaults.dispose()
+})

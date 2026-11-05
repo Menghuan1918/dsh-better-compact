@@ -25,6 +25,7 @@ import { isBetterCompactEngine, serviceIdentity } from './identity.js'
 import {
   fixedPrefixTokens,
   measurementKind,
+  reservedCompletionTokens,
   resolveCompactSpec,
   resolveTargetPolicy,
   selectCompactableRange,
@@ -287,7 +288,7 @@ export function buildBudgetPreview(input) {
       `no context capacity is known for ${target.provider}/${target.model}; configure contextWindow on that adapter model`
   } else {
     policy = resolveTargetPolicy(activeConfig, target)
-    const reserved = header?.config?.maxTokens ?? info?.defaultMaxTokens ?? 0
+    const reserved = reservedCompletionTokens(header, info?.defaultMaxTokens)
     try {
       spec = resolveCompactSpec(policy, contextWindow, reserved)
     } catch (error) {
@@ -296,7 +297,7 @@ export function buildBudgetPreview(input) {
   }
   if (budgetReason !== undefined) diagnostics.push(budgetReason)
 
-  const reservedCompletion = target === undefined ? null : header?.config?.maxTokens ?? info?.defaultMaxTokens ?? 0
+  const reservedCompletion = target === undefined ? null : reservedCompletionTokens(header, info?.defaultMaxTokens)
   const budget = {
     target: target ?? null,
     contextWindow,

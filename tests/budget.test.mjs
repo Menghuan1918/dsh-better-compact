@@ -4,6 +4,7 @@ import {
   BudgetConfigError,
   fixedPrefixTokens,
   measurementKind,
+  reservedCompletionTokens,
   resolveCompactSpec,
   resolveTargetPolicy,
   selectCompactableRange,
@@ -155,6 +156,14 @@ test('fixedPrefixTokens prices tools plus a leading system node only', () => {
   const noSystem = fakeSession([{ type: 'user/message', content: text('a') }])
   assert.equal(fixedPrefixTokens(noSystem, fakeMeasurement(noSystem, [100]), 700), 700)
   assert.equal(fixedPrefixTokens(session, undefined, 700), null)
+})
+
+test('output reservation prices the proposed request header before persistence', () => {
+  const proposed = { config: { provider: 'p', model: 'smaller', maxTokens: 8192 } }
+  assert.equal(reservedCompletionTokens(proposed, 1000), 8192)
+  assert.equal(reservedCompletionTokens({ config: {} }, 1000), 1000)
+  assert.equal(reservedCompletionTokens(undefined), 0)
+  assert.equal(reservedCompletionTokens({ config: { maxTokens: 0 } }, 1000), 0)
 })
 
 test('targetFromHeader and measurementKind use only provable facts', () => {

@@ -2,10 +2,9 @@
  * Read-only live-state collection shared by enhanced summaries and the
  * handoff continuation guard.
  *
- * Everything here is optional and failure-tolerant: a composition without the
- * native goal service, the todo projection, the job registry, or session
- * projections still compacts normally. The plugin never mutates goals, todos,
- * questions, jobs, or child agents.
+ * Optional services may be absent. A registered projection read must succeed:
+ * treating an unreadable pending question as empty could wrongly auto-continue.
+ * The plugin never mutates goals, todos, questions, jobs, or child agents.
  */
 
 /** Read the goal with its exact live-agent identity, or a diagnostic. */
@@ -35,24 +34,15 @@ function readGoal(ctx, agent) {
 }
 
 /** Read the native todo projection from the owning session. */
-function readTodos(ctx, agent) {
-  try {
-    const projections = ctx.get('sessionProjections')
-    if (projections === undefined) return []
-    const todos = projections.stateOf(agent.session, 'todos')
-    return Array.isArray(todos) ? todos.map((todo) => ({ content: todo.content, status: todo.status })) : []
-  } catch {
-    return []
-  }
+function readTodos(values) {
+  const todos = values.todos
+  return Array.isArray(todos) ? todos.map((todo) => ({ content: todo.content, status: todo.status })) : []
 }
 
 /** Read pending user questions (all still-answerable entries, read-only). */
-function readQuestions(ctx, agent) {
+function readQuestions(values) {
   try {
-    const projections = ctx.get('sessionProjections')
-    if (projections === undefined) return []
-    const state = projections.stateOf(agent.session, 'userQuestions')
-    const active = state?.questions?.active
+    const active = values.userQuestions?.active
     if (!Array.isArray(active)) return []
     return active.map((question) => ({
       callId: question.callId,
@@ -135,11 +125,18 @@ export function readRunningChildren(ctx, agent) {
  */
 export function collectAuthoritativeState(ctx, agent) {
   const { goal, goalError } = readGoal(ctx, agent)
+  // Read the public wire views at one complete, synchronous cut. Unlike the
+  // deprecated cachedSnapshot/stateOf faces this includes unmaterialized state.
+  let values = {}
+  const projections = ctx.get('sessionProjections')
+  if (projections !== undefined) {
+    values = projections.snapshot(agent.session, new Set(['todos', 'userQuestions'])).values
+  }
   return {
     goal,
     ...(goalError === undefined ? {} : { goalError }),
-    todos: readTodos(ctx, agent),
-    questions: readQuestions(ctx, agent),
+    todos: readTodos(values),
+    questions: readQuestions(values),
     jobs: readRunningJobs(ctx, agent),
     children: readRunningChildren(ctx, agent),
   }

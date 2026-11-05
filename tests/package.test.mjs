@@ -24,14 +24,21 @@ const preset = loadPatch(new URL('presets/better-compact.patch.yml', root))
 
 test('package metadata matches the published contract', () => {
   assert.equal(pkg.name, 'dsh-better-compact')
-  assert.equal(pkg.version, '0.2.0')
+  assert.equal(pkg.version, '0.3.0')
   assert.equal(pkg.license, 'Apache-2.0')
   const license = readFileSync(new URL('LICENSE', root), 'utf8')
   assert.equal(createHash('sha256').update(license).digest('hex'), 'cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30')
   assert.equal(pkg.type, 'module')
   assert.equal(pkg.repository.url, 'git+https://github.com/Menghuan1918/dsh-better-compact.git')
-  assert.equal(pkg.engines.node, '^22.19.0 || >=24.0.0')
-  assert.equal(pkg.engines.dsh, '>=0.2.1-rc.2 <0.3.0')
+  assert.equal(pkg.engines.node, '>=24.9.0')
+  assert.equal(pkg.engines.dsh, '0.2.2-rc.1')
+  assert.equal(pkg.dependencies['@deepseek-ai/schemastery'], '~3.19.0')
+  assert.equal(pkg.peerDependencies['@deepseek-ai/cordis'], '~4.1.0')
+  assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-host-webserver'], '0.2.2-rc.1')
+  assert.equal(pkg.peerDependencies['@deepseek-ai/dsh-web-server'], undefined)
+  for (const [name, range] of Object.entries(pkg.peerDependencies)) {
+    if (name.startsWith('@deepseek-ai/dsh-')) assert.equal(range, '0.2.2-rc.1', name)
+  }
   assert.equal(pkg.main, 'src/index.js')
   assert.deepEqual(pkg.exports, {
     '.': './src/index.js',
