@@ -32,6 +32,7 @@ window.__ModuleLoader__.load({
     /** Must stay in sync with src/config.js. */
     const ROW_KEYS = Object.freeze([
       'dsh-better-compact#dsh-better-compact',
+      'dsh-better-dsh#dsh-better-compact',
       '@menghuan1918/dsh-apollo#dsh-better-compact',
       'dsh-apollo#dsh-better-compact',
     ])

@@ -397,6 +397,7 @@ test('client module identity, exports and slot registration stay stable', () => 
   assert.deepEqual(exports.inject, ['slots', 'sessions', 'locale'])
   assert.deepEqual(exports.ROW_CONFIG_KEYS, [
     'dsh-better-compact#dsh-better-compact',
+    'dsh-better-dsh#dsh-better-compact',
     '@menghuan1918/dsh-apollo#dsh-better-compact',
     'dsh-apollo#dsh-better-compact',
   ])
@@ -434,7 +435,7 @@ test('client module identity, exports and slot registration stay stable', () => 
   }
   exports.apply(ctx)
   const disposers = slots.declare('plugins.row.config')
-  assert.equal(registrations.length, 3)
+  assert.equal(registrations.length, 4)
   assert.deepEqual(
     registrations.map((record) => record.options.key),
     exports.ROW_CONFIG_KEYS,

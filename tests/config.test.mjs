@@ -309,6 +309,7 @@ test('stable row identities and keys match the published contract', () => {
   assert.equal(ROW_CONFIG_KEY, 'dsh-better-compact#dsh-better-compact')
   assert.deepEqual(ROW_CONFIG_KEYS, [
     'dsh-better-compact#dsh-better-compact',
+    'dsh-better-dsh#dsh-better-compact',
     '@menghuan1918/dsh-apollo#dsh-better-compact',
     'dsh-apollo#dsh-better-compact',
   ])

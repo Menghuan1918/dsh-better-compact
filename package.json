@@ -1,15 +1,15 @@
 {
   "name": "dsh-better-compact",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Independent DSH compaction plugin: native, goal-aware, and file-handoff checkpoints with a read-only inspect API.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Menghuan1918/dsh-better-compact.git"
+    "url": "git+https://github.com/omdsh-dev/dsh-better-compact.git"
   },
   "publishConfig": {
-    "access": "public",
-    "registry": "https://registry.npmjs.org/"
+    "registry": "https://registry.npmjs.org/",
+    "access": "public"
   },
   "type": "module",
   "main": "src/index.js",
@@ -88,5 +88,9 @@
         "@deepseek-ai/dsh-api-session-controller"
       ]
     }
+  },
+  "homepage": "https://github.com/omdsh-dev/dsh-better-compact#readme",
+  "bugs": {
+    "url": "https://github.com/omdsh-dev/dsh-better-compact/issues"
   }
 }

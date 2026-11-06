@@ -30,6 +30,8 @@ export const ENTRY_ID = 'dsh-better-compact'
 export const ENGINE_ENTRY_ID = 'dsh-better-compact-engine'
 /** Canonical `plugins.row.config` slot key. */
 export const ROW_CONFIG_KEY = `${PACKAGE_NAME}#${ENTRY_ID}`
+/** Better DSH declares the same stable row. */
+export const BETTER_DSH_ROW_CONFIG_KEY = `dsh-better-dsh#${ENTRY_ID}`
 /** Apollo's published scoped package name declares the same stable row. */
 export const APOLLO_ROW_CONFIG_KEY = `@menghuan1918/dsh-apollo#${ENTRY_ID}`
 /** Historical unscoped Apollo row key. */
@@ -37,6 +39,7 @@ export const APOLLO_LEGACY_ROW_CONFIG_KEY = `dsh-apollo#${ENTRY_ID}`
 /** Every assembly's `plugins.row.config` key, in dispatch order. */
 export const ROW_CONFIG_KEYS = Object.freeze([
   ROW_CONFIG_KEY,
+  BETTER_DSH_ROW_CONFIG_KEY,
   APOLLO_ROW_CONFIG_KEY,
   APOLLO_LEGACY_ROW_CONFIG_KEY,
 ])
